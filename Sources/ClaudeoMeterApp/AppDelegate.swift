@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
-import ClaudeMeterCore
+import ClaudeoMeterCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {

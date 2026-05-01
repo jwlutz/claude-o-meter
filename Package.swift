@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "ClaudeMeter",
+    name: "ClaudeoMeter",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "claudometer", targets: ["ClaudeMeterApp"]),
-        .library(name: "ClaudeMeterCore", targets: ["ClaudeMeterCore"]),
+        .executable(name: "claude-o-meter", targets: ["ClaudeoMeterApp"]),
+        .library(name: "ClaudeoMeterCore", targets: ["ClaudeoMeterCore"]),
     ],
     targets: [
-        .target(name: "ClaudeMeterCore"),
+        .target(name: "ClaudeoMeterCore"),
         .executableTarget(
-            name: "ClaudeMeterApp",
-            dependencies: ["ClaudeMeterCore"]
+            name: "ClaudeoMeterApp",
+            dependencies: ["ClaudeoMeterCore"]
         ),
     ]
 )

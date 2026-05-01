@@ -1,7 +1,7 @@
 import Foundation
 import CommonCrypto
 import SQLite3
-import ClaudeMeterCore
+import ClaudeoMeterCore
 
 /// Calls the same `claude.ai/api/organizations/<orgId>/usage` endpoint the
 /// Claude desktop app's Settings → Usage page uses. Pure Swift — no Python,
@@ -22,7 +22,7 @@ final class UsageProbe: @unchecked Sendable {
         case failed(String)
     }
 
-    private let queue = DispatchQueue(label: "Claudometer.probe", qos: .background)
+    private let queue = DispatchQueue(label: "ClaudeoMeter.probe", qos: .background)
     private var inFlight = false
 
     func run(completion: @escaping (Result) -> Void) {
@@ -136,7 +136,7 @@ final class UsageProbe: @unchecked Sendable {
     private func readCookies(aesKey: Data) -> [String: String]? {
         let src = NSString(string: "~/Library/Application Support/Claude/Cookies").expandingTildeInPath
         guard FileManager.default.fileExists(atPath: src) else { return nil }
-        let tmp = NSTemporaryDirectory() + "claudometer-cookies-\(UUID().uuidString).db"
+        let tmp = NSTemporaryDirectory() + "claude-o-meter-cookies-\(UUID().uuidString).db"
         do { try FileManager.default.copyItem(atPath: src, toPath: tmp) } catch { return nil }
         defer { try? FileManager.default.removeItem(atPath: tmp) }
 

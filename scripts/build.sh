@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Build + codesign with a stable self-signed identity. SHA-1 of the cert is
-# pinned in cert-sha1.txt so codesign never matches by ambiguous name.
+# Build + codesign the Claude-o-Meter binary with a stable self-signed
+# identity. SHA-1 of the cert is pinned in cert-sha1.txt so codesign never
+# matches by ambiguous name.
+#
+# The codesign --identifier flag stays as the legacy "ClaudeMeter" so the
+# keychain ACL set against the original binary keeps recognizing rebuilds
+# after the public rename to claude-o-meter. Same reason the keychain cert
+# stays named "ClaudeMeter Dev" — invisible internals; renaming would
+# trigger a fresh "Always Allow" prompt.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-IDENTITY="ClaudeMeter Dev"
-DATA_DIR="$HOME/Library/Application Support/ClaudeMeter"
+IDENTITY="ClaudeMeter Dev"  # legacy — see comment above
+DATA_DIR="$HOME/Library/Application Support/Claude-o-Meter"
 KEY_PATH="$DATA_DIR/dev-signing.key"
 CRT_PATH="$DATA_DIR/dev-signing.crt"
 P12_PATH="$DATA_DIR/dev-signing.p12"
@@ -26,7 +33,7 @@ ensure_identity() {
   if [[ -f "$HASH_FILE" ]]; then
     local hash="$(cat "$HASH_FILE")"
     if cert_in_keychain "$hash"; then
-      echo "Using pinned ClaudeMeter Dev cert ($hash)"
+      echo "Using pinned signing cert ($hash)"
       return 0
     fi
     echo "Pinned cert no longer in keychain; regenerating."
@@ -59,7 +66,6 @@ CFG
   security set-key-partition-list -S apple-tool:,apple: \
     -k "$(security default-keychain | tr -d ' "')" "$KEYCHAIN" >/dev/null 2>&1 || true
 
-  # Pin the SHA-1 of the cert we just installed.
   local sha
   sha="$(openssl x509 -in "$CRT_PATH" -outform DER | shasum | awk '{print toupper($1)}')"
   echo "$sha" > "$HASH_FILE"
@@ -74,16 +80,13 @@ HASH="$(cat "$HASH_FILE")"
 cd "$PROJECT_ROOT"
 swift build "$@"
 
-BIN="$PROJECT_ROOT/.build/debug/claudometer"
-[[ -x "$BIN" ]] || BIN="$PROJECT_ROOT/.build/release/claudometer"
+BIN="$PROJECT_ROOT/.build/debug/claude-o-meter"
+[[ -x "$BIN" ]] || BIN="$PROJECT_ROOT/.build/release/claude-o-meter"
 
-# Sign by SHA-1 (unambiguous even with duplicate-name certs).
-# --identifier "ClaudeMeter" pins the codesign identifier to the legacy name
-# so the keychain ACL set against the original-named binary keeps recognizing
-# rebuilds after the executable rename to "claudometer".
+# --identifier "ClaudeMeter" preserves the legacy designated requirement
+# so the keychain ACL keeps matching across the public rename.
 codesign --force --sign "$HASH" --identifier "ClaudeMeter" --timestamp=none "$BIN"
 
-# Hard-fail if signature isn't a real cert signature
 REQ="$(codesign -d -r- "$BIN" 2>&1 | awk -F'=> ' '/designated =>/ {print $2}')"
 if [[ "$REQ" != *"certificate leaf = H"* ]]; then
   echo "FATAL: codesign fell back to ad-hoc — designated requirement is: $REQ" >&2

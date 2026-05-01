@@ -1,5 +1,5 @@
 import SwiftUI
-import ClaudeMeterCore
+import ClaudeoMeterCore
 
 struct PopoverView: View {
     @ObservedObject var store: UsageStore
@@ -21,7 +21,7 @@ struct PopoverView: View {
 
     private var header: some View {
         HStack {
-            Text("ClaudeMeter").font(.headline)
+            Text("Claude-o-Meter").font(.headline)
             Spacer()
             modeBadge
             Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }

@@ -46,6 +46,10 @@ enum ClaudeBadgeImage {
     /// The gray ghost is drawn first as the baseline; the bright orange is
     /// then clipped to the *remaining* wedge and stacked on top, so the used
     /// wedge naturally falls through to the ghost (no muddy blend).
+    ///
+    /// Edge cases: at fraction=0 a wedge from 90° to 90° is degenerate
+    /// (zero arc) and clips to nothing — the icon would appear empty/gone
+    /// right when the user just got their 5h reset. Special-case both ends.
     static func render(fraction: Double, pointSize: CGFloat = 22) -> NSImage {
         let size = NSSize(width: pointSize, height: pointSize)
         let result = NSImage(size: size)
@@ -54,32 +58,40 @@ enum ClaudeBadgeImage {
 
         guard let logo else { return result }
         let bounds = NSRect(origin: .zero, size: size)
-
-        logo.tinted(drainedOrange).draw(in: bounds)
-
         let used = max(0, min(1, fraction))
-        let remaining = 1 - used
-        if remaining > 0.001 {
-            let center = NSPoint(x: bounds.midX, y: bounds.midY)
-            let radius = hypot(bounds.width, bounds.height)
-            let usedEnd = 90 - used * 360
 
-            let slice = NSBezierPath()
-            slice.move(to: center)
-            slice.appendArc(
-                withCenter: center,
-                radius: radius,
-                startAngle: usedEnd,
-                endAngle: 90,
-                clockwise: true
-            )
-            slice.close()
-
-            NSGraphicsContext.saveGraphicsState()
-            slice.addClip()
+        if used <= 0.001 {
+            // Fresh — full bright orange, no clip.
             logo.tinted(claudeOrange).draw(in: bounds)
-            NSGraphicsContext.restoreGraphicsState()
+            return result
         }
+        if used >= 0.999 {
+            // Fully drained — only the gray ghost.
+            logo.tinted(drainedOrange).draw(in: bounds)
+            return result
+        }
+
+        // Partial: gray baseline + bright orange wedge for the remaining slice.
+        logo.tinted(drainedOrange).draw(in: bounds)
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        let radius = hypot(bounds.width, bounds.height)
+        let usedEnd = 90 - used * 360
+
+        let slice = NSBezierPath()
+        slice.move(to: center)
+        slice.appendArc(
+            withCenter: center,
+            radius: radius,
+            startAngle: usedEnd,
+            endAngle: 90,
+            clockwise: true
+        )
+        slice.close()
+
+        NSGraphicsContext.saveGraphicsState()
+        slice.addClip()
+        logo.tinted(claudeOrange).draw(in: bounds)
+        NSGraphicsContext.restoreGraphicsState()
 
         return result
     }

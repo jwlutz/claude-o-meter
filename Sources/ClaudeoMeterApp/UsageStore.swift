@@ -1,6 +1,6 @@
 import Foundation
 import Combine
-import ClaudeMeterCore
+import ClaudeoMeterCore
 
 @MainActor
 final class UsageStore: ObservableObject {
