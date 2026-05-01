@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "Claude-o-Meter",
+  "version": "0.1.0",
+  "identifier": "com.claude-o-meter.menubar",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "frontendDist": "../dist",
+    "devUrl": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "publisher": "Jack Lutz",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}
