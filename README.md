@@ -35,12 +35,37 @@ directly.
 That's it. No Python, no pip dependencies. Cookie decryption uses
 CommonCrypto; SQLite uses the libsqlite3 in the SDK.
 
-## Build & install
+## Install
+
+### macOS — prebuilt (recommended)
+
+Grab the latest `claude-o-meter-macos-arm64.tar.gz` from
+[Releases](https://github.com/jwlutz/claude-o-meter/releases/latest), then:
+
+```bash
+tar xzf claude-o-meter-macos-arm64.tar.gz
+cd claude-o-meter
+./install.sh
+```
+
+First launch will trigger one keychain prompt — click **Always Allow**.
+The binary is ad-hoc signed; if Gatekeeper warns, right-click the
+`claude-o-meter` binary → **Open** once.
+
+### Windows — prebuilt
+
+Download `Claude-o-Meter_*_x64-setup.exe` (NSIS) or `.msi` (WiX) from
+[Releases](https://github.com/jwlutz/claude-o-meter/releases/latest) and
+run it. The app registers itself as a login item on first run.
+
+### Build from source (developers)
 
 ```bash
 git clone git@github.com:jwlutz/claude-o-meter.git
 cd claude-o-meter
-./scripts/install.sh
+./scripts/install.sh    # macOS — builds + signs locally
+# or for Windows:
+cd windows/src-tauri && cargo tauri build
 ```
 
 Builds, signs with a self-signed cert ("ClaudeMeter Dev" — kept legacy
