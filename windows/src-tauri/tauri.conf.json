@@ -20,7 +20,8 @@
     "targets": ["msi", "nsis"],
     "publisher": "Jack Lutz",
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ]
   }
 }
