@@ -27,8 +27,9 @@ directly.
 - macOS 13+
 - Claude desktop app installed and signed in (provides the cookies + key)
 - Claude Code subscription (Pro / Max 5x / Max 20x)
-- Python 3 with `pycryptodome` for the cookie decryption helper
-  (`pip3 install --user pycryptodome`)
+
+That's it. No Python, no pip dependencies. Cookie decryption uses
+CommonCrypto (system framework); SQLite uses the libsqlite3 in the SDK.
 
 ## Build & run
 

@@ -1,20 +1,28 @@
 import Foundation
+import CommonCrypto
+import SQLite3
 import ClaudeMeterCore
 
 /// Calls the same `claude.ai/api/organizations/<orgId>/usage` endpoint the
-/// Claude desktop app's Settings → Usage page uses. Auth is the user's
-/// existing `.claude.ai` cookie jar, decrypted with the macOS keychain
-/// "Claude Safe Storage" key.
+/// Claude desktop app's Settings → Usage page uses. Pure Swift — no Python,
+/// no third-party deps. Pipeline:
 ///
-/// Returns either parsed `SubscriptionStats` or a string explaining why the
-/// probe failed (so the popover can show actionable guidance).
+/// 1. Read `Claude Safe Storage` key from the macOS login keychain via
+///    `/usr/bin/security` (system tool already trusted by the keychain ACL).
+/// 2. Derive Chromium AES-128-CBC key (PBKDF2-HMAC-SHA1, salt="saltysalt",
+///    iter=1003, dkLen=16) using CommonCrypto.
+/// 3. Open the Claude.app Cookies SQLite, decrypt every `.claude.ai` cookie,
+///    stripping the 3-byte "v10" prefix and 32-byte SHA-256(host) integrity
+///    prefix.
+/// 4. Read `organizationUuid` from `~/.claude.json:oauthAccount`.
+/// 5. GET the usage endpoint with the cookie jar + Claude desktop UA.
 final class UsageProbe: @unchecked Sendable {
     enum Result {
         case ok(SubscriptionStats)
         case failed(String)
     }
 
-    private let queue = DispatchQueue(label: "ClaudeMeter.probe", qos: .background)
+    private let queue = DispatchQueue(label: "Claudometer.probe", qos: .background)
     private var inFlight = false
 
     func run(completion: @escaping (Result) -> Void) {
@@ -27,41 +35,200 @@ final class UsageProbe: @unchecked Sendable {
     }
 
     private func runOnce() -> Result {
-        guard let scriptURL = ensureScript() else { return .failed("could not write probe script") }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["python3", scriptURL.path]
-        let outPipe = Pipe(); process.standardOutput = outPipe
-        process.standardError = Pipe()
-        do { try process.run() } catch { return .failed("python3 failed to launch: \(error)") }
+        let (keyOpt, keyErr) = readKeychainKey()
+        guard let keyPw = keyOpt else { return .failed(humanize(keyErr ?? "keychain")) }
 
-        let deadline = Date().addingTimeInterval(20)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-        if process.isRunning { process.terminate(); return .failed("probe timed out") }
+        let aesKey = pbkdf2(password: keyPw,
+                            salt: Data("saltysalt".utf8),
+                            iterations: 1003, keyLen: 16)
 
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return .failed("could not parse probe output")
+        guard let cookies = readCookies(aesKey: aesKey) else {
+            return .failed(humanize("no_cookies"))
         }
-        if let err = obj["error"] as? String {
-            return .failed(humanize(err))
+        guard cookies["sessionKey"] != nil else {
+            return .failed(humanize("no_session"))
+        }
+        guard let (orgId, planTier) = readOrgInfo() else {
+            return .failed(humanize("no_org"))
+        }
+        return fetchUsage(orgId: orgId, cookies: cookies, planTier: planTier)
+    }
+
+    // MARK: - Keychain
+
+    private func readKeychainKey() -> (String?, String?) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["find-generic-password", "-w", "-s", "Claude Safe Storage"]
+        let out = Pipe(); p.standardOutput = out
+        p.standardError = Pipe()
+        do { try p.run() } catch { return (nil, "keychain_launch:\(error)") }
+        p.waitUntilExit()
+        if p.terminationStatus != 0 { return (nil, "keychain") }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let s = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty
+        else { return (nil, "keychain_empty") }
+        return (s, nil)
+    }
+
+    // MARK: - Crypto
+
+    private func pbkdf2(password: String, salt: Data, iterations: Int, keyLen: Int) -> Data {
+        var derived = Data(count: keyLen)
+        let pwBytes = Array(password.utf8)
+        derived.withUnsafeMutableBytes { dkBuf in
+            salt.withUnsafeBytes { saltBuf in
+                _ = CCKeyDerivationPBKDF(
+                    CCPBKDFAlgorithm(kCCPBKDF2),
+                    pwBytes, pwBytes.count,
+                    saltBuf.bindMemory(to: UInt8.self).baseAddress, salt.count,
+                    CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
+                    UInt32(iterations),
+                    dkBuf.bindMemory(to: UInt8.self).baseAddress, keyLen
+                )
+            }
+        }
+        return derived
+    }
+
+    private func aesCBCDecrypt(key: Data, iv: Data, ciphertext: Data) -> Data? {
+        let bufSize = ciphertext.count + kCCBlockSizeAES128
+        var buf = Data(count: bufSize)
+        var moved = 0
+        var status: CCCryptorStatus = CCCryptorStatus(kCCSuccess)
+        buf.withUnsafeMutableBytes { bufPtr in
+            ciphertext.withUnsafeBytes { ctPtr in
+                iv.withUnsafeBytes { ivPtr in
+                    key.withUnsafeBytes { keyPtr in
+                        status = CCCrypt(
+                            CCOperation(kCCDecrypt),
+                            CCAlgorithm(kCCAlgorithmAES128),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyPtr.baseAddress, key.count,
+                            ivPtr.baseAddress,
+                            ctPtr.baseAddress, ciphertext.count,
+                            bufPtr.baseAddress, bufSize,
+                            &moved
+                        )
+                    }
+                }
+            }
+        }
+        guard status == kCCSuccess else { return nil }
+        return buf.prefix(moved)
+    }
+
+    private func decryptCookieValue(_ blob: Data, aesKey: Data) -> String? {
+        guard blob.count > 3, blob.prefix(3) == Data("v10".utf8) else { return nil }
+        let ciphertext = blob.dropFirst(3)
+        let iv = Data(repeating: 0x20, count: 16)
+        guard let plain = aesCBCDecrypt(key: aesKey,
+                                        iv: iv,
+                                        ciphertext: Data(ciphertext)) else { return nil }
+        guard plain.count > 32 else { return nil }
+        // Drop the 32-byte SHA-256(host) integrity prefix Chromium prepends.
+        return String(data: Data(plain.dropFirst(32)), encoding: .utf8)
+    }
+
+    // MARK: - Cookies SQLite
+
+    private func readCookies(aesKey: Data) -> [String: String]? {
+        let src = NSString(string: "~/Library/Application Support/Claude/Cookies").expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: src) else { return nil }
+        let tmp = NSTemporaryDirectory() + "claudometer-cookies-\(UUID().uuidString).db"
+        do { try FileManager.default.copyItem(atPath: src, toPath: tmp) } catch { return nil }
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        var db: OpaquePointer?
+        guard sqlite3_open(tmp, &db) == SQLITE_OK else {
+            sqlite3_close(db); return nil
+        }
+        defer { sqlite3_close(db) }
+
+        var stmt: OpaquePointer?
+        let sql = "SELECT name, encrypted_value FROM cookies WHERE host_key LIKE '%claude.ai%'"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+
+        var cookies: [String: String] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let nameC = sqlite3_column_text(stmt, 0),
+                  let blobPtr = sqlite3_column_blob(stmt, 1) else { continue }
+            let name = String(cString: nameC)
+            let blobLen = Int(sqlite3_column_bytes(stmt, 1))
+            let blob = Data(bytes: blobPtr, count: blobLen)
+            if let v = decryptCookieValue(blob, aesKey: aesKey) {
+                cookies[name] = v
+            }
+        }
+        return cookies
+    }
+
+    // MARK: - Org info
+
+    private func readOrgInfo() -> (orgId: String, planTier: String)? {
+        let path = NSString(string: "~/.claude.json").expandingTildeInPath
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["oauthAccount"] as? [String: Any],
+              let orgId = oauth["organizationUuid"] as? String
+        else { return nil }
+        let planTier = (oauth["organizationRateLimitTier"] as? String) ?? "subscription"
+        return (orgId, planTier)
+    }
+
+    // MARK: - HTTP
+
+    private func fetchUsage(orgId: String, cookies: [String: String], planTier: String) -> Result {
+        guard let url = URL(string: "https://claude.ai/api/organizations/\(orgId)/usage") else {
+            return .failed("invalid url")
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+        let cookieStr = cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+        req.addValue(cookieStr, forHTTPHeaderField: "Cookie")
+        req.addValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.4758.0 Chrome/130.0.6723.137 Electron/33.4.11 Safari/537.36",
+                     forHTTPHeaderField: "User-Agent")
+        req.addValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        req.addValue("https://claude.ai", forHTTPHeaderField: "Origin")
+        req.addValue("https://claude.ai/", forHTTPHeaderField: "Referer")
+        req.addValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
+        req.addValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
+        req.addValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+
+        let sem = DispatchSemaphore(value: 0)
+        var status = 0
+        var bodyData: Data?
+        var netError: String?
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            if let err { netError = "network:\(err.localizedDescription)" }
+            if let r = resp as? HTTPURLResponse { status = r.statusCode }
+            bodyData = data
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 15)
+
+        if let netError { return .failed(humanize(netError)) }
+        if status == 403 { return .failed(humanize("http_403")) }
+        if status != 200 { return .failed("http_\(status)") }
+        guard let data = bodyData,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .failed("response parse failed")
         }
 
-        let plan = (obj["plan"] as? String) ?? "subscription"
         let five = obj["five_hour"] as? [String: Any]
         let week = obj["seven_day"] as? [String: Any]
         let sonnet = obj["seven_day_sonnet"] as? [String: Any]
         let opus = obj["seven_day_opus"] as? [String: Any]
 
-        guard let fivePct = (five?["utilization"] as? Double) else {
-            return .failed("usage response missing five_hour.utilization")
+        guard let fivePct = five?["utilization"] as? Double else {
+            return .failed("response missing five_hour.utilization")
         }
         let weekPct = (week?["utilization"] as? Double) ?? 0
 
         return .ok(SubscriptionStats(
-            plan: plan,
+            plan: planTier,
             fiveHourPct: fivePct,
             fiveHourResetText: relativeReset(from: five?["resets_at"] as? String),
             weeklyPct: weekPct,
@@ -77,17 +244,17 @@ final class UsageProbe: @unchecked Sendable {
     private func humanize(_ raw: String) -> String {
         switch true {
         case raw.hasPrefix("keychain"):
-            return "Keychain access denied. Re-run and choose Always Allow on the Claude Safe Storage prompt."
-        case raw.hasPrefix("pycryptodome"):
-            return "Missing dependency. Run: pip3 install --user pycryptodome"
+            return "Keychain access denied. The next probe will reprompt — choose Always Allow on the Claude Safe Storage dialog."
         case raw.hasPrefix("no_session"):
-            return "Not signed in to Claude.app — sign in there, then refresh."
+            return "Not signed in to Claude.app — open it and sign in, then refresh."
         case raw.hasPrefix("no_org"):
-            return "Couldn't find your org in ~/.claude.json — sign in to Claude Code first."
+            return "Couldn't read your org from ~/.claude.json — sign in to Claude Code first."
         case raw.hasPrefix("no_cookies"):
-            return "Claude.app cookies missing — install/run Claude.app once."
+            return "Claude.app cookies missing. Install and run Claude.app once."
         case raw.hasPrefix("http_403"):
-            return "Anthropic blocked the request (cookies expired?). Reopen Claude.app to refresh."
+            return "Anthropic blocked the request (cookies expired). Reopen Claude.app to refresh, then retry."
+        case raw.hasPrefix("network"):
+            return raw.replacingOccurrences(of: "network:", with: "Network: ")
         default:
             return raw
         }
@@ -102,104 +269,4 @@ final class UsageProbe: @unchecked Sendable {
         guard let date = f.date(from: iso) ?? g.date(from: iso) else { return nil }
         return Formatting.compactDuration(max(0, date.timeIntervalSince(Date())))
     }
-
-    private func ensureScript() -> URL? {
-        let fm = FileManager.default
-        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        let dir = appSupport.appendingPathComponent("ClaudeMeter", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("fetch_usage.py")
-        do {
-            try Self.embeddedPython.write(to: url, atomically: true, encoding: .utf8)
-        } catch { return nil }
-        return url
-    }
-
-    private static let embeddedPython: String = #"""
-#!/usr/bin/env python3
-"""Fetch live Anthropic subscription usage and emit JSON to stdout."""
-import os, sys, json, sqlite3, shutil, tempfile, subprocess, urllib.request, urllib.error
-
-def fail(msg):
-    print(json.dumps({"error": msg}))
-    sys.exit(0)
-
-try:
-    from Crypto.Cipher import AES
-    from Crypto.Protocol.KDF import PBKDF2
-    from Crypto.Hash import SHA1
-except ImportError:
-    fail("pycryptodome_not_installed")
-
-try:
-    key_pw = subprocess.run(
-        ["security", "find-generic-password", "-w", "-s", "Claude Safe Storage"],
-        capture_output=True, text=True, check=True, timeout=15,
-    ).stdout.strip()
-except Exception as e:
-    fail(f"keychain:{e}")
-
-key = PBKDF2(key_pw, b"saltysalt", dkLen=16, count=1003, hmac_hash_module=SHA1)
-
-cookies_src = os.path.expanduser("~/Library/Application Support/Claude/Cookies")
-if not os.path.exists(cookies_src):
-    fail("no_cookies_db")
-
-with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-    shutil.copyfile(cookies_src, f.name); db_path = f.name
-con = sqlite3.connect(db_path)
-
-def decrypt(blob):
-    if not blob or blob[:3] != b"v10": return None
-    plain = AES.new(key, AES.MODE_CBC, b" " * 16).decrypt(blob[3:])
-    pad = plain[-1]
-    if pad < 1 or pad > 16: return None
-    plain = plain[:-pad]
-    if len(plain) <= 32: return None
-    return plain[32:].decode("utf-8", errors="replace")
-
-cookies = {}
-for name, _, ev in con.execute(
-    "SELECT name, host_key, encrypted_value FROM cookies WHERE host_key LIKE '%claude.ai%'"
-):
-    v = decrypt(ev)
-    if v: cookies[name] = v
-con.close()
-try: os.unlink(db_path)
-except: pass
-
-if "sessionKey" not in cookies:
-    fail("no_session_cookie")
-
-claude_json = os.path.expanduser("~/.claude.json")
-try:
-    with open(claude_json) as f:
-        d = json.load(f)
-    org_id = d["oauthAccount"]["organizationUuid"]
-except Exception as e:
-    fail(f"no_org:{e}")
-
-url = f"https://claude.ai/api/organizations/{org_id}/usage"
-cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-req = urllib.request.Request(url, headers={
-    "Cookie": cookie_str,
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.4758.0 Chrome/130.0.6723.137 Electron/33.4.11 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Origin": "https://claude.ai",
-    "Referer": "https://claude.ai/",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-})
-try:
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-        data = json.loads(body)
-        data["plan"] = (d.get("oauthAccount", {}) or {}).get("organizationRateLimitTier") or "subscription"
-        print(json.dumps(data))
-except urllib.error.HTTPError as e:
-    fail(f"http_{e.code}")
-except Exception as e:
-    fail(f"network:{e}")
-"""#
 }
