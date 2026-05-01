@@ -4,6 +4,7 @@ import ClaudeoMeterCore
 struct PopoverView: View {
     @ObservedObject var store: UsageStore
     @State private var tick = Date()
+    @AppStorage("showTimer") private var showTimer: Bool = true
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -69,10 +70,13 @@ struct PopoverView: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(spacing: 12) {
             Text("Updated \(relativeTime(store.snapshot.generatedAt))")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
+            Toggle("Timer", isOn: $showTimer)
+                .toggleStyle(.checkbox)
+                .font(.caption)
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless).font(.caption)
         }

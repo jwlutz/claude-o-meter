@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private let store = UsageStore()
     private var cancellable: AnyCancellable?
+    private var defaultsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -32,11 +33,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cancellable = store.$snapshot
             .receive(on: RunLoop.main)
             .sink { [weak self] (_: UsageSnapshot) in self?.renderStatusItem() }
+
+        // Re-render immediately when the user toggles the timer checkbox
+        // in the popover (UserDefaults posts didChangeNotification).
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.renderStatusItem() }
+        }
     }
 
     private func renderStatusItem() {
         guard let button = statusItem.button else { return }
         let snapshot = store.snapshot
+        // Defaults to true on first launch; toggled via the popover checkbox.
+        let showTimer = UserDefaults.standard.object(forKey: "showTimer") as? Bool ?? true
 
         let fraction: Double
         let label: String?
@@ -46,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             label = nil
         case .subscription(let s):
             fraction = min(1.0, s.fiveHourPct / 100.0)
-            label = s.fiveHourResetText
+            label = showTimer ? s.fiveHourResetText : nil
         }
 
         let img = ClaudeBadgeImage.render(fraction: fraction, pointSize: 22)
