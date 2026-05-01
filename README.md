@@ -1,85 +1,73 @@
 # ClaudeMeter
 
-Mac menu-bar app + desktop widget showing how much of your Claude Code 5-hour
-and weekly usage you've burned through, with a glance-able pie chart and a
-countdown to reset.
+macOS menu-bar app showing your real-time Claude Pro/Max **5-hour** and
+**weekly** subscription usage. Pulls live numbers from the same endpoint
+the Claude desktop app's Settings → Usage page uses, so the percentages
+match exactly — no estimation, no hardcoded plan limits.
 
-Reads `~/.claude/projects/**/*.jsonl` directly — no API calls, no network.
+The icon is a Claude burst that drains clockwise as you use the 5-hour
+window: full bright orange when fresh, gray ghost when exhausted.
+
+## How it works
+
+1. Reads the `Claude Safe Storage` AES key from your macOS login keychain.
+2. Decrypts the `.claude.ai` cookies stored by the Claude desktop app
+   (Chromium AES-128-CBC, PBKDF2-HMAC-SHA1, 1003 iterations).
+3. Reads `organizationUuid` from `~/.claude.json:oauthAccount`.
+4. `GET https://claude.ai/api/organizations/<orgId>/usage` with the
+   decrypted cookie jar and the Claude desktop User-Agent.
+5. Re-fetches every 60 seconds.
+
+There are no fallback estimators, no token thresholds, and no
+plan-specific defaults — the API returns `utilization` percentages
+directly.
+
+## Requirements
+
+- macOS 13+
+- Claude desktop app installed and signed in (provides the cookies + key)
+- Claude Code subscription (Pro / Max 5x / Max 20x)
+- Python 3 with `pycryptodome` for the cookie decryption helper
+  (`pip3 install --user pycryptodome`)
+
+## Build & run
+
+```bash
+cd ~/Desktop/Projects/github/claudometer
+./scripts/build.sh
+.build/debug/ClaudeMeter
+```
+
+`scripts/build.sh` creates a stable self-signed code-signing identity
+("ClaudeMeter Dev") in your login keychain on first run, then signs
+every build with it. This keeps the keychain ACL stable across rebuilds
+so you only ever see one "Claude Safe Storage" prompt — click
+**Always Allow** and you're done.
+
+The first launch after signing will trigger that single keychain prompt;
+subsequent rebuilds (with the same cert) reuse the standing ACL.
 
 ## Layout
 
 ```
-ClaudeMeter/
-  Package.swift                        # SwiftPM: builds the menu-bar exe
+claudometer/
+  Package.swift
+  scripts/build.sh                       # build + ad-hoc signed
   Sources/
-    ClaudeMeterCore/                   # shared models + log parser
-      UsageSnapshot.swift              #   data model + plan limits
-      UsageReader.swift                #   JSONL parser → UsageSnapshot
-      Formatting.swift                 #   "2h14m", "120k" helpers
-    ClaudeMeterApp/                    # menu-bar executable
-      main.swift, AppDelegate.swift    #   NSStatusItem + popover wiring
-      MenuBarIcon.swift                #   tiny pie + countdown
-      PopoverView.swift                #   click-through full breakdown
-      PieChart.swift                   #   SwiftUI pie + ring views
-      UsageStore.swift                 #   ObservableObject, FSEvents watcher
-    ClaudeMeterWidget/                 # widget source (not yet a target)
-      ClaudeMeterWidget.swift          #   small + medium widget entry
-      SharedPie.swift                  #   pie duplicated for widget target
+    ClaudeMeterCore/
+      UsageSnapshot.swift                # UsageMode + SubscriptionStats
+      Formatting.swift                   # "4h12m" helpers
+    ClaudeMeterApp/
+      main.swift, AppDelegate.swift      # NSStatusItem wiring
+      ClaudeBadge.swift                  # NSImage compositor (drain effect)
+      PopoverView.swift                  # SwiftUI popover
+      UsageStore.swift                   # 60s probe loop
+      UsageProbe.swift                   # spawns the Python fetch helper
 ```
-
-## Run the menu-bar app today
-
-```bash
-cd ~/Desktop/ClaudeMeter
-swift run ClaudeMeter
-```
-
-A pie + countdown should appear in the menu bar. Click it for the full
-breakdown popover. Quit from the popover.
-
-> Running via `swift run` shows a Dock icon briefly — to make it a true
-> "menu-bar only" app, build a proper `.app` bundle (see next section).
-
-## Package as a real `.app` (LSUIElement, login item)
-
-The menu bar app already calls `NSApp.setActivationPolicy(.accessory)` so
-no Dock icon appears at runtime. To register it as a login item and ship
-it to other machines:
-
-1. `File > New > Project > macOS > App` in Xcode.
-2. Drag the four files from `Sources/ClaudeMeterApp` and the contents of
-   `Sources/ClaudeMeterCore` into the new target.
-3. In `Info.plist`, set `Application is agent (UIElement)` = `YES`.
-4. To launch on login: `SMAppService.mainApp.register()` (macOS 13+).
-
-## Adding the desktop widget
-
-WidgetKit widgets live in their own bundle; SwiftPM can't produce one,
-so the widget needs an Xcode target.
-
-1. In the same Xcode project, `File > New > Target > Widget Extension`.
-   Uncheck "Include Configuration Intent" for the simplest path.
-2. Drag `Sources/ClaudeMeterWidget/*.swift` into the widget target.
-3. Add `ClaudeMeterCore`'s files to the widget target as well (or extract
-   them into a framework that both targets link).
-4. Enable the `App Groups` capability on **both** targets and add a group
-   like `group.com.you.claudemeter`. The widget runs sandboxed and cannot
-   read `~/.claude` directly, so:
-   - From the menu-bar app, write a JSON snapshot into the App Group
-     container after each refresh.
-   - In `UsageProvider.load()`, decode that JSON instead of running
-     `UsageReader()` live.
-
-Once that's wired, drag the widget to the desktop (macOS 14+) or the
-Notification Center.
-
-## Token budgets
-
-The 5-hour and weekly token budgets in `PlanLimits` are estimates — Anthropic
-doesn't publish exact caps. Defaults are conservative for a Max plan; tune in
-`UsageSnapshot.swift` or expose a Settings pane later.
 
 ## Reset semantics
 
-The 5-hour window is rolling: it resets 5h after the **first** assistant
-message in the current window. `WindowUsage.resetAt` reflects that.
+Both percentages and reset timestamps come from Anthropic's response.
+The 5-hour window resets 5 hours after the first request in it; the
+weekly window resets at a fixed weekly cadence. ClaudeMeter just
+displays what the API returns.

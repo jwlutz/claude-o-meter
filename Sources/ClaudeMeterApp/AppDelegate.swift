@@ -9,7 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private let store = UsageStore()
     private var cancellable: AnyCancellable?
-    private var displayTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -26,13 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         renderStatusItem()
 
+        // Re-render only when the snapshot changes (every ~60s after a probe,
+        // or immediately on manual refresh). Skipping per-second refreshes
+        // saves wakeups + battery — the countdown text is "Xh Ym" granularity
+        // which the API-side recompute already handles each probe cycle.
         cancellable = store.$snapshot
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.renderStatusItem() }
-
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.renderStatusItem() }
-        }
+            .sink { [weak self] (_: UsageSnapshot) in self?.renderStatusItem() }
     }
 
     private func renderStatusItem() {
@@ -45,16 +44,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .unknown:
             fraction = 0
             label = nil
-        case .api(let s):
-            fraction = s.todayBudgetFraction
-            label = Formatting.usdCompact(s.today.costUSD)
         case .subscription(let s):
             fraction = min(1.0, s.fiveHourPct / 100.0)
             label = s.fiveHourResetText
         }
 
         let img = ClaudeBadgeImage.render(fraction: fraction, pointSize: 22)
-        img.isTemplate = false  // keep our colors; menu bar won't auto-tint
+        img.isTemplate = false
         button.image = img
         button.title = label.map { "  \($0)" } ?? ""
     }

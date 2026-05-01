@@ -74,11 +74,14 @@ HASH="$(cat "$HASH_FILE")"
 cd "$PROJECT_ROOT"
 swift build "$@"
 
-BIN="$PROJECT_ROOT/.build/debug/ClaudeMeter"
-[[ -x "$BIN" ]] || BIN="$PROJECT_ROOT/.build/release/ClaudeMeter"
+BIN="$PROJECT_ROOT/.build/debug/claudometer"
+[[ -x "$BIN" ]] || BIN="$PROJECT_ROOT/.build/release/claudometer"
 
-# Sign by SHA-1 (unambiguous even with duplicate-name certs)
-codesign --force --sign "$HASH" --timestamp=none "$BIN"
+# Sign by SHA-1 (unambiguous even with duplicate-name certs).
+# --identifier "ClaudeMeter" pins the codesign identifier to the legacy name
+# so the keychain ACL set against the original-named binary keeps recognizing
+# rebuilds after the executable rename to "claudometer".
+codesign --force --sign "$HASH" --identifier "ClaudeMeter" --timestamp=none "$BIN"
 
 # Hard-fail if signature isn't a real cert signature
 REQ="$(codesign -d -r- "$BIN" 2>&1 | awk -F'=> ' '/designated =>/ {print $2}')"
