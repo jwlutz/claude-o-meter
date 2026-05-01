@@ -158,7 +158,3 @@ What's **not** counted in this gauge:
   pay-per-use API billing, not the subscription pool.
 - Claude Agent SDK programs (require API key auth).
 - Team / Enterprise plans — separate quota, different endpoint shape.
-
-## License
-
-MIT.
