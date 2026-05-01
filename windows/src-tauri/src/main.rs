@@ -54,6 +54,19 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+fn autostart_is_enabled(app: AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn autostart_set(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let manager = app.autolaunch();
+    let result = if enabled { manager.enable() } else { manager.disable() };
+    result.map_err(|e| e.to_string())?;
+    Ok(manager.is_enabled().unwrap_or(enabled))
+}
+
 /// Render a single pie-on-burst PNG for the popover rows. Returns base64.
 #[tauri::command]
 fn render_pie_png(fraction: f64) -> String {
@@ -83,12 +96,11 @@ fn main() {
         .manage(AppState { snapshot: snapshot.clone() })
         .invoke_handler(tauri::generate_handler![
             get_snapshot, kick_refresh, quit_app, render_pie_png,
+            autostart_is_enabled, autostart_set,
         ])
         .setup({
             let snapshot = snapshot.clone();
             move |app| {
-                let _ = app.autolaunch().enable();
-
                 // Build the popover webview window once, hidden. Show/hide on tray click.
                 let popover = WebviewWindowBuilder::new(
                     app,

@@ -149,6 +149,13 @@
 
   <div class="divider"></div>
 
+  <div class="toggle-row">
+    <input type="checkbox" id="autostart-toggle">
+    <label for="autostart-toggle">Start at login</label>
+  </div>
+
+  <div class="divider"></div>
+
   <div class="footer">
     <div id="updated">—</div>
     <button id="quit-btn">Quit</button>
@@ -266,6 +273,22 @@
 
     document.getElementById("refresh-btn").addEventListener("click", refresh);
     document.getElementById("quit-btn").addEventListener("click", () => invoke("quit_app"));
+
+    const autostartToggle = document.getElementById("autostart-toggle");
+    async function syncAutostart() {
+      try { autostartToggle.checked = await invoke("autostart_is_enabled"); }
+      catch (e) { autostartToggle.disabled = true; }
+    }
+    autostartToggle.addEventListener("change", async (e) => {
+      const desired = e.target.checked;
+      try {
+        const actual = await invoke("autostart_set", { enabled: desired });
+        autostartToggle.checked = actual;
+      } catch (err) {
+        autostartToggle.checked = !desired;
+      }
+    });
+    syncAutostart();
 
     refresh();
     setInterval(async () => {
