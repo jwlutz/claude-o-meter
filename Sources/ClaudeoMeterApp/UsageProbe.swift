@@ -61,7 +61,7 @@ final class UsageProbe: @unchecked Sendable {
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         p.arguments = ["find-generic-password", "-w", "-s", "Claude Safe Storage"]
         let out = Pipe(); p.standardOutput = out
-        p.standardError = Pipe()
+        p.standardError = FileHandle.nullDevice  // unused; avoid an unread Pipe
         do { try p.run() } catch { return (nil, "keychain_launch:\(error)") }
         p.waitUntilExit()
         if p.terminationStatus != 0 { return (nil, "keychain") }

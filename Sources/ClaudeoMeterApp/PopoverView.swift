@@ -35,7 +35,7 @@ struct PopoverView: View {
         case .unknown:
             Text("offline").font(.caption2).foregroundStyle(.secondary)
         case .subscription(let s):
-            Text(prettyPlan(s.plan)).font(.caption2.bold())
+            Text(PlanLabel.display(s.plan)).font(.caption2.bold())
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Capsule().fill(Color.orange.opacity(0.25)))
         }
@@ -85,15 +85,6 @@ struct PopoverView: View {
         return "\(s / 60)m ago"
     }
 
-    private func prettyPlan(_ raw: String) -> String {
-        switch raw {
-        case let s where s.contains("max_20x"): return "Max 20x"
-        case let s where s.contains("max_5x"):  return "Max 5x"
-        case let s where s.contains("pro"):     return "Pro"
-        case "subscription":                    return "Subscription"
-        default:                                return raw
-        }
-    }
 }
 
 private struct SubscriptionContent: View {

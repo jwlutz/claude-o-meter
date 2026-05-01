@@ -1,6 +1,7 @@
 import Foundation
 
 public enum Formatting {
+    /// "4h12m" / "23m" / "2d3h" — countdown rendered relative to now.
     public static func compactDuration(_ seconds: TimeInterval) -> String {
         let s = Int(seconds.rounded())
         let h = s / 3600
@@ -13,24 +14,18 @@ public enum Formatting {
         if h > 0 { return "\(h)h\(m)m" }
         return "\(m)m"
     }
+}
 
-    public static func compactTokens(_ n: Int) -> String {
-        if n >= 1_000_000_000 { return String(format: "%.1fB", Double(n) / 1_000_000_000) }
-        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.0fk", Double(n) / 1_000) }
-        return "\(n)"
-    }
-
-    public static func usd(_ amount: Double) -> String {
-        if amount >= 100 { return String(format: "$%.0f", amount) }
-        if amount >= 10 { return String(format: "$%.1f", amount) }
-        return String(format: "$%.2f", amount)
-    }
-
-    public static func usdCompact(_ amount: Double) -> String {
-        // Menu-bar friendly: drops the dollar sign and trailing zeros for small values
-        if amount >= 100 { return String(format: "$%.0f", amount) }
-        if amount >= 10 { return String(format: "$%.1f", amount) }
-        return String(format: "$%.2f", amount)
+/// Pretty-print Anthropic's plan tier strings ("default_claude_max_20x" etc.)
+/// for the popover badge.
+public enum PlanLabel {
+    public static func display(_ raw: String) -> String {
+        switch true {
+        case raw.contains("max_20x"): return "Max 20x"
+        case raw.contains("max_5x"):  return "Max 5x"
+        case raw.contains("pro"):     return "Pro"
+        case raw == "subscription":   return "Subscription"
+        default:                      return raw
+        }
     }
 }
