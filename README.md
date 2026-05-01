@@ -8,6 +8,8 @@ match exactly — no estimation, no hardcoded plan limits.
 The icon is a Claude burst that drains clockwise as you use the 5-hour
 window: full bright orange when fresh, gray ghost when exhausted.
 
+![Claude-o-Meter menu bar icon and popover](docs/screenshot.png)
+
 ## How it works
 
 1. Reads the `Claude Safe Storage` AES key from your macOS login keychain
