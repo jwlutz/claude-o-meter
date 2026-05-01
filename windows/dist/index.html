@@ -1,8 +1,279 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Claude-o-Meter</title></head>
+<head>
+  <meta charset="utf-8">
+  <title>Claude-o-Meter</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: rgba(28, 28, 30, 0.985);
+      color: #f0f0f0;
+      width: 440px;
+      user-select: none;
+      -webkit-user-select: none;
+      overflow: hidden;
+    }
+    body { padding: 16px 18px; }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .title { font-size: 14px; font-weight: 600; }
+    .right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(237, 115, 71, 0.25);
+      color: #ed7347;
+    }
+    .badge.offline {
+      background: rgba(140, 140, 140, 0.2);
+      color: #999;
+    }
+    button {
+      background: transparent;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    button:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
+    .divider {
+      height: 1px;
+      background: rgba(255,255,255,0.08);
+      margin: 10px 0;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 6px 0;
+    }
+    .pie-cell {
+      width: 56px;
+      height: 56px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pie-cell img {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .pie-text {
+      flex: 1;
+      min-width: 0;
+    }
+    .pie-title {
+      font-size: 12px;
+      color: #999;
+      margin-bottom: 2px;
+    }
+    .pie-pct {
+      font-size: 18px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .pie-reset {
+      text-align: right;
+      flex-shrink: 0;
+      min-width: 64px;
+    }
+    .pie-reset-label {
+      font-size: 11px;
+      color: #999;
+    }
+    .pie-reset-val {
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #999;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: #ccc;
+      padding: 6px 0;
+    }
+    .toggle-row input { accent-color: #ed7347; cursor: pointer; }
+    .toggle-row label { cursor: pointer; }
+
+    .unknown {
+      padding: 16px 0;
+      color: #999;
+      font-size: 13px;
+    }
+    .unknown-reason {
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
 <body>
-  <!-- Tray-only app. No window is ever shown; this file is only required by
-       the Tauri build pipeline. -->
+  <div class="header">
+    <div class="title">Claude-o-Meter</div>
+    <div class="right">
+      <div id="plan-badge" class="badge offline">offline</div>
+      <button id="refresh-btn" title="Refresh">↻</button>
+    </div>
+  </div>
+
+  <div id="content"></div>
+
+  <div class="divider"></div>
+
+  <div class="footer">
+    <div id="updated">—</div>
+    <button id="quit-btn">Quit</button>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    // Cache rendered pie PNGs by rounded fraction (2 decimal places ~= 100 cache buckets).
+    const pieCache = new Map();
+    async function pieDataUrl(fraction) {
+      const key = Math.round(fraction * 100) / 100;
+      if (pieCache.has(key)) return pieCache.get(key);
+      const b64 = await invoke("render_pie_png", { fraction: key });
+      const url = `data:image/png;base64,${b64}`;
+      pieCache.set(key, url);
+      return url;
+    }
+
+    function showFatal(msg) {
+      document.getElementById("content").innerHTML =
+        `<div class="unknown">IPC error<div class="unknown-reason">${msg}</div></div>`;
+    }
+
+    function planLabel(raw) {
+      if (!raw) return "offline";
+      const s = String(raw).toLowerCase();
+      if (s.includes("max_20x")) return "Max 20x";
+      if (s.includes("max_5x"))  return "Max 5x";
+      if (s.includes("max"))     return "Max";
+      if (s.includes("pro"))     return "Pro";
+      if (s === "subscription")  return "Subscription";
+      return raw;
+    }
+
+    function relativeTime(iso) {
+      if (!iso) return "—";
+      const t = new Date(iso).getTime();
+      const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+      if (s < 5) return "just now";
+      if (s < 60) return `${s}s ago`;
+      return `${Math.floor(s / 60)}m ago`;
+    }
+
+    async function row(title, pct, resetText) {
+      const safePct = Number.isFinite(pct) ? pct : 0;
+      const url = await pieDataUrl(safePct / 100);
+      return `
+        <div class="row">
+          <div class="pie-cell"><img src="${url}" alt=""></div>
+          <div class="pie-text">
+            <div class="pie-title">${title}</div>
+            <div class="pie-pct">${Math.round(safePct)}% used</div>
+          </div>
+          <div class="pie-reset">
+            <div class="pie-reset-label">Resets</div>
+            <div class="pie-reset-val">${resetText || "—"}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function render(snap) {
+      const badge = document.getElementById("plan-badge");
+      const content = document.getElementById("content");
+      const updated = document.getElementById("updated");
+
+      if (snap.last_error) {
+        badge.textContent = "offline";
+        badge.className = "badge offline";
+        content.innerHTML = `
+          <div class="unknown">
+            Usage unavailable
+            <div class="unknown-reason">${snap.last_error}</div>
+          </div>`;
+      } else if (!snap.has_data) {
+        badge.textContent = "loading…";
+        badge.className = "badge offline";
+        content.innerHTML = `<div class="unknown">Reading usage…</div>`;
+      } else {
+        badge.textContent = planLabel(snap.plan_tier);
+        badge.className = "badge";
+
+        const parts = [];
+        parts.push(await row("5-hour window", snap.five_hour_pct, snap.five_hour_reset_text));
+        parts.push(`<div class="divider"></div>`);
+        parts.push(await row("Weekly · all models", snap.weekly_pct, snap.weekly_reset_text));
+        if (snap.weekly_sonnet_pct !== null && snap.weekly_sonnet_pct !== undefined) {
+          parts.push(`<div class="divider"></div>`);
+          parts.push(await row("Weekly · Sonnet", snap.weekly_sonnet_pct, snap.weekly_sonnet_reset_text));
+        }
+        if (snap.weekly_opus_pct !== null && snap.weekly_opus_pct !== undefined) {
+          parts.push(`<div class="divider"></div>`);
+          parts.push(await row("Weekly · Opus", snap.weekly_opus_pct, snap.weekly_opus_reset_text));
+        }
+        content.innerHTML = parts.join("");
+      }
+
+      updated.textContent = `Updated ${relativeTime(snap.generated_at)}`;
+    }
+
+    async function refresh() {
+      try {
+        if (!window.__TAURI__ || !window.__TAURI__.core) {
+          showFatal("window.__TAURI__.core not available");
+          return;
+        }
+        try { await invoke("kick_refresh"); } catch (e) { /* fire-and-forget */ }
+        const snap = await invoke("get_snapshot");
+        await render(snap);
+      } catch (e) {
+        showFatal(String(e && e.message ? e.message : e));
+      }
+    }
+
+    document.getElementById("refresh-btn").addEventListener("click", refresh);
+    document.getElementById("quit-btn").addEventListener("click", () => invoke("quit_app"));
+
+    refresh();
+    setInterval(async () => {
+      try {
+        const snap = await invoke("get_snapshot");
+        await render(snap);
+      } catch (e) {}
+    }, 1500);
+  </script>
 </body>
 </html>

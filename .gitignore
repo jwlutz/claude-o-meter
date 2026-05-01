@@ -20,3 +20,8 @@ DerivedData/
 *.p12
 *.key
 *.pem
+
+# Rust / Tauri
+target/
+windows/src-tauri/target/
+windows/src-tauri/gen/schemas/

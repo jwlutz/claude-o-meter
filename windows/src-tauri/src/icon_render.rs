@@ -2,6 +2,7 @@
 // effect. Mirrors the macOS look exactly, just done in tiny-skia instead
 // of CoreGraphics.
 
+use image::imageops::FilterType;
 use image::ImageReader;
 use std::io::Cursor;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
@@ -10,7 +11,7 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 /// macOS — alpha-channel template, black on transparent.
 const BURST_PNG: &[u8] = include_bytes!("../icons/burst.png");
 
-const SIZE: u32 = 32; // Windows tray icons are typically 32×32 (or 16×16)
+const SIZE: u32 = 96; // 96×96 source — Windows downscales to tray cell sharply
 
 pub struct IconColors {
     pub bright: (u8, u8, u8, u8),
@@ -25,14 +26,93 @@ impl Default for IconColors {
     }
 }
 
+/// Render the burst into the destination RGBA buffer at offset (x_off, y_off)
+/// occupying a square of `size` pixels. Mirrors the standalone render_rgba
+/// drawing logic but writes into an existing buffer (used for the wider
+/// "burst + countdown text" tray icon).
+/// How much to over-render the burst beyond the cell so it visually fills
+/// the icon space after Windows downscales. 1.0 = no zoom, 1.5 = 50% bigger
+/// (edges crop). Anthropic's tray asset has internal padding which makes it
+/// look small — zooming compensates.
+const BURST_ZOOM: f64 = 1.55;
+
+pub fn render_burst_into(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    x_off: u32,
+    y_off: u32,
+    size: u32,
+    fraction: f64,
+) {
+    let used = fraction.clamp(0.0, 1.0);
+    let cs = IconColors::default();
+    let burst = ImageReader::new(Cursor::new(BURST_PNG))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.decode().ok())
+        .map(|img| img.to_rgba8());
+
+    if let Some(burst_img) = burst {
+        // Render at zoomed resolution then crop centered, so the burst
+        // visually fills the cell.
+        let zoomed = ((size as f64) * BURST_ZOOM).round() as u32;
+        let resized = image::imageops::resize(&burst_img, zoomed, zoomed, FilterType::Triangle);
+        let crop_off = ((zoomed as i32 - size as i32) / 2).max(0) as u32;
+
+        let cx = size as f64 / 2.0;
+        let cy = size as f64 / 2.0;
+        for y in 0..size {
+            for x in 0..size {
+                let sx = x + crop_off;
+                let sy = y + crop_off;
+                if sx >= zoomed || sy >= zoomed { continue; }
+                let px = resized.get_pixel(sx, sy);
+                let alpha = px[3];
+                if alpha == 0 { continue; }
+                let dx = x as f64 + 0.5 - cx;
+                let dy = y as f64 + 0.5 - cy;
+                let theta = clockwise_from_top(dx, dy);
+                let in_used = theta < used;
+                let (r, g, b, a) = if in_used {
+                    let drained_a = (alpha as u16 * cs.drained.3 as u16 / 255) as u8;
+                    (cs.drained.0, cs.drained.1, cs.drained.2, drained_a)
+                } else {
+                    (cs.bright.0, cs.bright.1, cs.bright.2, alpha)
+                };
+                let dx_pix = x_off + x;
+                let dy_pix = y_off + y;
+                if dx_pix >= dst_w || dy_pix >= dst_h { continue; }
+                let i = ((dy_pix * dst_w + dx_pix) * 4) as usize;
+                dst[i]     = r;
+                dst[i + 1] = g;
+                dst[i + 2] = b;
+                dst[i + 3] = a;
+            }
+        }
+    }
+}
+
+fn burst_img_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 4] {
+    let p = img.get_pixel(x.min(img.width() - 1), y.min(img.height() - 1));
+    [p[0], p[1], p[2], p[3]]
+}
+
 /// Returns a `SIZE×SIZE` RGBA8 buffer. `fraction` ∈ [0, 1] is the portion
-/// used (so bright orange fills the *remaining* wedge clockwise from 12
-/// o'clock; at fraction=0 the whole burst is bright).
+/// used. Delegates to `render_burst_into` so the zoom factor is applied
+/// consistently between the standalone tray icon and the wider
+/// burst-plus-text variant.
 pub fn render_rgba(fraction: f64) -> Vec<u8> {
+    let mut buf = vec![0u8; (SIZE * SIZE * 4) as usize];
+    render_burst_into(&mut buf, SIZE, SIZE, 0, 0, SIZE, fraction);
+    buf
+}
+
+#[allow(dead_code)]
+fn _unused_render_rgba(fraction: f64) -> Vec<u8> {
     let used = fraction.clamp(0.0, 1.0);
     let cs = IconColors::default();
 
-    // Decode the burst as a luminance/alpha mask
     let burst = ImageReader::new(Cursor::new(BURST_PNG))
         .with_guessed_format()
         .ok()
@@ -42,18 +122,15 @@ pub fn render_rgba(fraction: f64) -> Vec<u8> {
     let mut pix = Pixmap::new(SIZE, SIZE).expect("pixmap");
 
     if let Some(burst_img) = burst {
-        // Resize to icon size with simple nearest sampling — burst shape
-        // is forgiving and tiny-skia doesn't ship a resizer for free.
-        let w_src = burst_img.width();
-        let h_src = burst_img.height();
+        // High-quality bilinear resize so the burst stays crisp at 64x64
+        // and at whatever DPI Windows ends up scaling to.
+        let resized = image::imageops::resize(&burst_img, SIZE, SIZE, FilterType::Triangle);
         let mut tinted_full = vec![0u8; (SIZE * SIZE * 4) as usize];
         let mut tinted_mask = vec![0u8; (SIZE * SIZE * 4) as usize];
 
         for y in 0..SIZE {
             for x in 0..SIZE {
-                let sx = (x as f64 / SIZE as f64 * w_src as f64) as u32;
-                let sy = (y as f64 / SIZE as f64 * h_src as f64) as u32;
-                let p = burst_img.get_pixel(sx.min(w_src - 1), sy.min(h_src - 1));
+                let p = resized.get_pixel(x, y);
                 let alpha = p[3];
                 let i = ((y * SIZE + x) * 4) as usize;
                 // Drained baseline (always painted)
@@ -102,9 +179,10 @@ pub fn render_rgba(fraction: f64) -> Vec<u8> {
 }
 
 fn clockwise_from_top(dx: f64, dy: f64) -> f64 {
-    // Angle 0 at 12 o'clock, increasing clockwise to 1 (full revolution).
-    // dy is screen-down positive.
-    let mut a = (-dx).atan2(-dy); // 0 at top, π at bottom going +x→…
+    // Angle 0 at 12 o'clock, increasing clockwise (top→right→bottom→left→top)
+    // to 1 (full revolution). dy is screen-down positive.
+    // atan2(dx, -dy): top (dx=0,dy=-1)→0, right→π/2, bottom→π, left→-π/2.
+    let mut a = dx.atan2(-dy);
     if a < 0.0 { a += std::f64::consts::TAU; }
     a / std::f64::consts::TAU
 }

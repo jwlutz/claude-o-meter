@@ -67,8 +67,8 @@ mod windows_impl {
 
         // Free the buffer Win32 allocated for us.
         unsafe {
-            let _ = windows::Win32::System::Memory::LocalFree(
-                Some(windows::Win32::Foundation::HLOCAL(output.pbData as *mut _)),
+            let _ = windows::Win32::Foundation::LocalFree(
+                windows::Win32::Foundation::HLOCAL(output.pbData as *mut _),
             );
         }
         // Avoid unused-mut on input
@@ -95,33 +95,178 @@ mod windows_impl {
             return Err("no_cookies_db".into());
         }
 
-        // Copy to a temp location so the live SQLite isn't locked by the app.
+        // Two-stage read:
+        //   1. Try a plain shared open. Works if Chromium opened the file
+        //      with FILE_SHARE_READ (older builds, some configurations).
+        //   2. If we get a sharing violation, ask the Windows Restart Manager
+        //      to find and forcibly stop the Chromium child process that's
+        //      holding the lock, then race to read the file before Chromium
+        //      restarts the child. No admin required — RM is per-user.
+        let bytes = read_bytes_shared(&src)
+            .or_else(|_| read_bytes_via_restart_manager(&src))
+            .map_err(|e| format!("cookies_read_src:{e}"))?;
+
         let tmp = std::env::temp_dir().join(format!(
             "claude-o-meter-cookies-{}.db",
             std::process::id()
         ));
-        std::fs::copy(&src, &tmp).map_err(|e| format!("cookies_copy:{e}"))?;
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("cookies_write_tmp:{e}"))?;
 
-        let conn = rusqlite::Connection::open(&tmp).map_err(|e| format!("cookies_open:{e}"))?;
+        let conn = rusqlite::Connection::open(&tmp)
+            .map_err(|e| format!("cookies_open:{e}"))?;
         let mut stmt = conn
-            .prepare("SELECT name, encrypted_value FROM cookies WHERE host_key LIKE '%claude.ai%'")
+            .prepare("SELECT host_key, name, encrypted_value FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%'")
             .map_err(|e| format!("cookies_prepare:{e}"))?;
         let mut rows = stmt
             .query([])
             .map_err(|e| format!("cookies_query:{e}"))?;
 
         let mut out = std::collections::HashMap::new();
+        let mut prefixes_seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut total_rows = 0;
+        let mut decrypt_failures = 0;
         while let Ok(Some(row)) = rows.next() {
-            let name: String = match row.get(0) { Ok(v) => v, _ => continue };
-            let blob: Vec<u8> = match row.get(1) { Ok(v) => v, _ => continue };
+            total_rows += 1;
+            let _host: String = row.get(0).unwrap_or_default();
+            let name: String = match row.get(1) { Ok(v) => v, _ => continue };
+            let blob: Vec<u8> = match row.get(2) { Ok(v) => v, _ => continue };
+
+            // Record the 3-byte prefix so we can identify the encryption format.
+            let prefix = String::from_utf8_lossy(
+                &blob.iter().take(3).copied().collect::<Vec<u8>>()
+            ).to_string();
+            *prefixes_seen.entry(prefix).or_insert(0) += 1;
+
             if let Some(v) = decrypt_cookie(&blob, &key) {
                 out.insert(name, v);
+            } else {
+                decrypt_failures += 1;
             }
         }
-        drop(stmt);
-        drop(conn);
         let _ = std::fs::remove_file(&tmp);
+
+        if out.is_empty() {
+            return Err(format!(
+                "DEBUG rows={} decrypt_failed={} prefixes={:?}",
+                total_rows, decrypt_failures, prefixes_seen
+            ));
+        }
+
         Ok(out)
+    }
+
+    fn read_bytes_shared(src: &std::path::Path) -> Result<Vec<u8>, String> {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut bytes = Vec::new();
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(7) // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            .open(src)
+            .map_err(|e| format!("open:{e}"))?
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("read:{e}"))?;
+        Ok(bytes)
+    }
+
+    /// Use the Windows Restart Manager to find and forcibly stop the
+    /// process(es) holding the file open, then race to read the bytes
+    /// before that process gets respawned by its parent. No admin needed —
+    /// RM operates within the user session.
+    fn read_bytes_via_restart_manager(src: &std::path::Path) -> Result<Vec<u8>, String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::RestartManager::{
+            RmEndSession, RmForceShutdown, RmGetList, RmRegisterResources, RmShutdown,
+            RmStartSession, CCH_RM_SESSION_KEY, RM_PROCESS_INFO,
+        };
+
+        // RmStartSession needs a buffer of CCH_RM_SESSION_KEY+1 wide chars
+        // for the session-key string.
+        let mut session_key = vec![0u16; (CCH_RM_SESSION_KEY as usize) + 1];
+        let mut session_handle: u32 = 0;
+        let rc = unsafe {
+            RmStartSession(
+                &mut session_handle,
+                0,
+                windows::core::PWSTR(session_key.as_mut_ptr()),
+            )
+        };
+        if rc.0 != 0 { return Err(format!("rm_start:{}", rc.0)); }
+
+        // Wide path with NUL terminator.
+        let path_w: Vec<u16> = src
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let path_ptr = PCWSTR(path_w.as_ptr());
+        let path_arr = [path_ptr];
+
+        let rc = unsafe {
+            RmRegisterResources(
+                session_handle,
+                Some(&path_arr),
+                None, // applications
+                None, // services
+            )
+        };
+        if rc.0 != 0 {
+            unsafe { let _ = RmEndSession(session_handle); }
+            return Err(format!("rm_register:{}", rc.0));
+        }
+
+        // Discover (we don't actually use the list — just need RM to know
+        // about the lock holders before RmShutdown).
+        let mut needed: u32 = 0;
+        let mut count: u32 = 0;
+        let mut reasons: u32 = 0;
+        let _ = unsafe {
+            RmGetList(
+                session_handle,
+                &mut needed,
+                &mut count,
+                None,
+                &mut reasons,
+            )
+        };
+        if needed > 0 {
+            count = needed;
+            let mut info: Vec<RM_PROCESS_INFO> = vec![RM_PROCESS_INFO::default(); needed as usize];
+            let _ = unsafe {
+                RmGetList(
+                    session_handle,
+                    &mut needed,
+                    &mut count,
+                    Some(info.as_mut_ptr()),
+                    &mut reasons,
+                )
+            };
+        }
+
+        // Force-shutdown the holders. RmForceShutdown == 1.
+        let _ = unsafe {
+            RmShutdown(session_handle, RmForceShutdown.0 as u32, None)
+        };
+
+        // Race window: read as fast as possible before Chromium relaunches
+        // its network service. A few retries with tiny sleeps wins reliably.
+        let mut last_err = String::from("no_attempt");
+        for attempt in 0..6 {
+            match read_bytes_shared(src) {
+                Ok(b) => {
+                    unsafe { let _ = RmEndSession(session_handle); }
+                    return Ok(b);
+                }
+                Err(e) => {
+                    last_err = e;
+                    std::thread::sleep(std::time::Duration::from_millis(40 * (attempt + 1)));
+                }
+            }
+        }
+
+        unsafe { let _ = RmEndSession(session_handle); }
+        Err(format!("rm_read_lost_race:{last_err}"))
     }
 }
 
