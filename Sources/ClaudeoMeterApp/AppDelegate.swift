@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// popover closes; this flag tracks whether one is queued.
     private var pendingRender = false
 
+    /// Bundle ID of the Claude desktop app — used to gate the menu bar
+    /// icon's visibility on Claude.app's running state.
+    private static let claudeBundleID = "com.anthropic.claudefordesktop"
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem.button else { return }
@@ -34,19 +38,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(rootView: PopoverView(store: store))
 
         renderStatusItem()
+        updateClaudeAppVisibility()
 
         cancellable = store.$snapshot
             .receive(on: RunLoop.main)
             .sink { [weak self] (_: UsageSnapshot) in self?.renderStatusItem() }
 
-        // Re-render when the user toggles the popover checkbox. UserDefaults
-        // posts didChangeNotification on every key write.
+        // Re-render when the user toggles the popover checkbox.
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.renderStatusItem() }
+        }
+
+        // Track Claude.app lifecycle so the menu bar icon disappears when
+        // Claude.app quits and reappears when it launches. Daemon stays
+        // alive in the background (LaunchAgent KeepAlive) — no probe call
+        // makes sense without Claude's auth, so we also pause the icon
+        // updates from a backed-off snapshot.
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+        ] {
+            workspaceCenter.addObserver(
+                self,
+                selector: #selector(claudeAppStateChanged(_:)),
+                name: name,
+                object: nil
+            )
+        }
+    }
+
+    @objc private func claudeAppStateChanged(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication,
+              app.bundleIdentifier == Self.claudeBundleID
+        else { return }
+        updateClaudeAppVisibility()
+    }
+
+    /// Hide/show the status item based on Claude.app's running state.
+    /// `isVisible` is the documented way to remove the icon from the menu
+    /// bar without releasing the NSStatusItem.
+    private func updateClaudeAppVisibility() {
+        let claudeRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == Self.claudeBundleID
+        }
+        statusItem?.isVisible = claudeRunning
+        if claudeRunning {
+            // Auth just came back — refresh immediately instead of waiting
+            // up to 60s for the next probe tick.
+            store.refresh()
         }
     }
 
