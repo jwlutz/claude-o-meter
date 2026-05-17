@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var cancellable: AnyCancellable?
     private var defaultsObserver: NSObjectProtocol?
     private var pendingRender = false
+    private var lastRenderedStatusKey: String?
 
     /// Bundle IDs for provider desktop apps. App lifecycle changes are used as
     /// a refresh hint, but the menu-bar item stays visible so the user can
@@ -23,15 +24,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem.button else { return }
-        button.imagePosition = .imageLeading
+        button.image = nil
+        button.title = ""
+        button.isBordered = false
         button.target = self
         button.action = #selector(togglePopover(_:))
-        button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
 
         popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: PopoverView(store: store))
+        let popoverController = NSHostingController(rootView: PopoverView(store: store))
+        popoverController.view.wantsLayer = true
+        popoverController.view.layer?.backgroundColor = NSColor.clear.cgColor
+        popover.contentViewController = popoverController
         updatePopoverSize()
 
         renderStatusItem()
@@ -87,20 +92,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let snapshot = store.snapshot
         let showTimer = UserDefaults.standard.object(forKey: UsagePreferenceKeys.showTimer) as? Bool ?? true
         let providers = UsagePreferences.enabledProviderIDs()
+        let width = MenuBarPillImage.width(providers: providers, showTimer: showTimer)
+        let now = Date()
+        let renderKey = statusRenderKey(snapshot: snapshot, providers: providers, showTimer: showTimer, now: now)
 
-        let img = MenuBarPillImage.render(snapshot: snapshot, providers: providers, showTimer: showTimer)
-        img.isTemplate = false
-        if popover?.isShown == true, abs(statusItem.length - img.size.width) > 0.5 {
-            pendingRender = true
+        if popover?.isShown == true {
+            if abs(statusItem.length - width) > 0.5 || lastRenderedStatusKey != renderKey {
+                pendingRender = true
+            }
             return
         }
-        statusItem.length = img.size.width
-        button.image = img
+        if button.image != nil,
+           abs(statusItem.length - width) <= 0.5,
+           lastRenderedStatusKey == renderKey {
+            return
+        }
+        statusItem.length = width
+        button.image = MenuBarPillImage.render(
+            snapshot: snapshot,
+            providers: providers,
+            showTimer: showTimer,
+            now: now
+        )
         button.title = ""
+        lastRenderedStatusKey = renderKey
+    }
+
+    private func statusRenderKey(
+        snapshot: UsageSnapshot,
+        providers: [UsageProviderID],
+        showTimer: Bool,
+        now: Date
+    ) -> String {
+        let providerKeys = providers.map { provider in
+            let window = primaryWindow(for: provider, in: snapshot)
+            let usage = window.map { String(Int($0.usedPercent.rounded())) } ?? "unknown"
+            let timer = showTimer ? (window?.resetText(relativeTo: now) ?? "--") : "hidden"
+            return "\(provider.rawValue):\(usage):\(timer)"
+        }
+        return "\(showTimer):\(providers.map(\.rawValue).joined(separator: ",")):\(providerKeys.joined(separator: "|"))"
+    }
+
+    private func primaryWindow(for provider: UsageProviderID, in snapshot: UsageSnapshot) -> UsageWindow? {
+        guard case .subscription(let stats) = snapshot.provider(provider)?.mode else { return nil }
+        return stats.primaryWindow
     }
 
     private func updatePopoverSize() {
-        guard let popover else { return }
         popover.contentSize = PopoverMetrics.contentSize(
             snapshot: store.snapshot,
             providers: UsagePreferences.enabledProviderIDs()

@@ -227,30 +227,43 @@ enum ProviderBadgeImage {
 }
 
 enum MenuBarPillImage {
+    static let height: CGFloat = 28
+    private static let gap: CGFloat = 7
+    private static let iconOnlyWidth: CGFloat = 38
+    private static let timerWidth: CGFloat = 104
+
+    static func width(providers: [UsageProviderID], showTimer: Bool) -> CGFloat {
+        let pillWidth = showTimer ? timerWidth : iconOnlyWidth
+        return CGFloat(providers.count) * pillWidth + CGFloat(max(0, providers.count - 1)) * gap
+    }
+
     static func render(snapshot: UsageSnapshot,
                        providers: [UsageProviderID],
                        showTimer: Bool,
-                       pointHeight: CGFloat = 28,
                        now: Date = Date()) -> NSImage {
-        let pillWidth: CGFloat = showTimer ? 104 : 38
-        let gap: CGFloat = 7
-        let width = CGFloat(providers.count) * pillWidth + CGFloat(max(0, providers.count - 1)) * gap
-        let size = NSSize(width: width, height: pointHeight)
+        let pillWidth = showTimer ? timerWidth : iconOnlyWidth
+        let size = NSSize(width: width(providers: providers, showTimer: showTimer), height: height)
         let result = NSImage(size: size)
         result.lockFocus()
         defer { result.unlockFocus() }
 
         for (index, provider) in providers.enumerated() {
-            let x = CGFloat(index) * (pillWidth + gap)
+            let frame = NSRect(
+                x: CGFloat(index) * (pillWidth + gap),
+                y: 1,
+                width: pillWidth,
+                height: height - 2
+            )
             drawPill(
                 provider: provider,
                 providerSnapshot: snapshot.provider(provider),
                 showTimer: showTimer,
-                frame: NSRect(x: x, y: 1, width: pillWidth, height: pointHeight - 2),
+                frame: frame,
                 now: now
             )
         }
 
+        result.isTemplate = false
         return result
     }
 
@@ -260,12 +273,12 @@ enum MenuBarPillImage {
                                  frame: NSRect,
                                  now: Date) {
         let radius = frame.height / 2
-        let background = NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius)
-        NSColor(white: 1.0, alpha: 0.86).setFill()
-        background.fill()
-        NSColor(white: 0.0, alpha: 0.16).setStroke()
-        background.lineWidth = 1
-        background.stroke()
+        let capsule = NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius)
+        NSColor.clear.setFill()
+        capsule.fill()
+        NSColor.labelColor.withAlphaComponent(0.24).setStroke()
+        capsule.lineWidth = 1
+        capsule.stroke()
 
         let window = providerSnapshot?.mode.subscriptionStats?.primaryWindow
         let fraction = min(1.0, max(0, (window?.usedPercent ?? 100) / 100.0))
@@ -277,7 +290,7 @@ enum MenuBarPillImage {
         let timer = window?.resetText(relativeTo: now) ?? "--"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold),
-            .foregroundColor: NSColor.black,
+            .foregroundColor: NSColor.labelColor,
         ]
         let textSize = timer.size(withAttributes: attributes)
         let textRect = NSRect(

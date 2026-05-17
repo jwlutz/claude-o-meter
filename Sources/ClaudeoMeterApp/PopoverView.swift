@@ -3,35 +3,59 @@ import ClaudeoMeterCore
 
 enum PopoverMetrics {
     static let width: CGFloat = 420
-    static let maxContentHeight: CGFloat = 400
+    static let maxContentHeight: CGFloat = 520
+    static let minHeight: CGFloat = 220
+    static let maxHeight: CGFloat = 560
+    static let chromeHeight: CGFloat = 120
 
     static func contentSize(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> CGSize {
-        CGSize(width: width, height: preferredHeight(snapshot: snapshot, providers: providers))
+        contentSize(scrollHeight: estimatedScrollHeight(snapshot: snapshot, providers: providers))
     }
 
-    private static func preferredHeight(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> CGFloat {
-        let chromeHeight: CGFloat = 120
-        let providerGap = CGFloat(max(0, providers.count - 1)) * 12
-        let contentHeight = providers.reduce(CGFloat.zero) { total, provider in
-            total + providerHeight(snapshot.provider(provider))
-        } + providerGap
-        let scrollHeight = min(contentHeight, maxContentHeight)
-        return min(max(chromeHeight + scrollHeight, 240), 560)
+    static func contentSize(scrollHeight: CGFloat) -> CGSize {
+        let height = min(max(chromeHeight + scrollHeight, minHeight), maxHeight)
+        return CGSize(width: width, height: height)
     }
 
-    private static func providerHeight(_ snapshot: ProviderUsageSnapshot?) -> CGFloat {
+    static func estimatedScrollHeight(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> CGFloat {
+        min(contentHeight(snapshot: snapshot, providers: providers), maxContentHeight)
+    }
+
+    static func shouldScroll(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> Bool {
+        contentHeight(snapshot: snapshot, providers: providers) > maxContentHeight
+    }
+
+    private static func contentHeight(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> CGFloat {
+        let providerGap: CGFloat = 25
+        return providers.reduce(CGFloat.zero) { total, provider in
+            total + providerHeight(snapshot.provider(provider), provider: provider)
+        } + CGFloat(max(0, providers.count - 1)) * providerGap
+    }
+
+    private static func providerHeight(_ snapshot: ProviderUsageSnapshot?, provider: UsageProviderID) -> CGFloat {
+        let headerHeight: CGFloat = 20
+        let headerToRows: CGFloat = 10
+
         let rowCount: Int
         if case .subscription(let stats) = snapshot?.mode {
             rowCount = max(1, stats.windows.count)
         } else {
-            rowCount = 1
+            rowCount = estimatedWindowCount(for: provider)
         }
 
-        let headerHeight: CGFloat = 24
-        let headerToRows: CGFloat = 10
-        let rowHeight: CGFloat = 64
-        let dividerSpacing = CGFloat(max(0, rowCount - 1)) * 13
-        return headerHeight + headerToRows + CGFloat(rowCount) * rowHeight + dividerSpacing
+        let rowHeight: CGFloat = 42
+        let extraRowHeight: CGFloat = rowHeight + 21
+        return headerHeight
+            + headerToRows
+            + rowHeight
+            + CGFloat(max(0, rowCount - 1)) * extraRowHeight
+    }
+
+    private static func estimatedWindowCount(for provider: UsageProviderID) -> Int {
+        switch provider {
+        case .claudeCode: return 3
+        case .codex: return 2
+        }
     }
 }
 
@@ -41,33 +65,58 @@ struct PopoverView: View {
     @AppStorage(UsagePreferenceKeys.showTimer) private var showTimer: Bool = true
     @AppStorage(UsagePreferenceKeys.claudeCodeEnabled) private var showClaudeCode: Bool = true
     @AppStorage(UsagePreferenceKeys.codexEnabled) private var showCodex: Bool = true
-    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private let ticker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        root
+            .onReceive(ticker) { tick = $0 }
+            .onAppear {
+                normalizeProviderPreferences()
+            }
+            .onChange(of: showClaudeCode) { _ in normalizeProviderPreferences() }
+            .onChange(of: showCodex) { _ in normalizeProviderPreferences() }
+    }
+
+    @ViewBuilder
+    private var root: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 10) {
+                panelContent
+            }
+        } else {
+            panelContent
+        }
+        #else
+        panelContent
+        #endif
+    }
+
+    private var panelContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().padding(.vertical, 8)
-            ScrollView {
-                content
-            }
-            .frame(maxHeight: PopoverMetrics.maxContentHeight)
+            contentArea
             Divider().padding(.vertical, 8)
             footer
         }
         .padding(16)
         .frame(width: PopoverMetrics.width)
-        .onReceive(ticker) { tick = $0 }
-        .onAppear { normalizeProviderPreferences() }
-        .onChange(of: showClaudeCode) { _ in normalizeProviderPreferences() }
-        .onChange(of: showCodex) { _ in normalizeProviderPreferences() }
     }
 
     private var header: some View {
         HStack {
             Text("Claude-o-Meter").font(.headline)
             Spacer()
-            Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless)
+            Button { store.refresh() } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+            .padding(6)
+            .liquidGlassControl()
+            .help("Refresh usage")
         }
     }
 
@@ -91,24 +140,41 @@ struct PopoverView: View {
         }
     }
 
+    @ViewBuilder
+    private var contentArea: some View {
+        if PopoverMetrics.shouldScroll(snapshot: store.snapshot, providers: visibleProviderIDs) {
+            ScrollView(.vertical, showsIndicators: true) {
+                content
+            }
+            .frame(height: PopoverMetrics.estimatedScrollHeight(snapshot: store.snapshot, providers: visibleProviderIDs))
+        } else {
+            content
+                .frame(height: PopoverMetrics.estimatedScrollHeight(snapshot: store.snapshot, providers: visibleProviderIDs))
+        }
+    }
+
     private var footer: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text("Updated \(relativeTime(store.snapshot.generatedAt))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .layoutPriority(1)
             Spacer()
             Toggle("Claude", isOn: claudeBinding)
-                .toggleStyle(.checkbox)
-                .font(.caption)
+                .toggleStyle(GlassSwitchToggleStyle())
             Toggle("Codex", isOn: codexBinding)
-                .toggleStyle(.checkbox)
-                .font(.caption)
+                .toggleStyle(GlassSwitchToggleStyle())
             Toggle("Timer", isOn: $showTimer)
-                .toggleStyle(.checkbox)
-                .font(.caption)
+                .toggleStyle(GlassSwitchToggleStyle())
             Button("Quit") { NSApp.terminate(nil) }
-                .buttonStyle(.borderless)
-                .font(.caption)
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .liquidGlassChip()
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -154,6 +220,44 @@ struct PopoverView: View {
     }
 }
 
+private struct GlassSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                switchGlyph(isOn: configuration.isOn)
+                configuration.label
+                    .font(.caption.weight(.semibold))
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .contentShape(Capsule())
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .liquidGlassChip()
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func switchGlyph(isOn: Bool) -> some View {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            Capsule()
+                .strokeBorder(.primary.opacity(isOn ? 0.24 : 0.14), lineWidth: 1)
+            Circle()
+                .fill(.primary.opacity(isOn ? 0.86 : 0.30))
+                .frame(width: 10, height: 10)
+                .overlay {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundStyle(.background)
+                        .opacity(isOn ? 1 : 0)
+                }
+        }
+        .frame(width: 23, height: 14)
+    }
+}
+
 private struct ProviderSection: View {
     let snapshot: ProviderUsageSnapshot
     let now: Date
@@ -183,11 +287,18 @@ private struct ProviderSection: View {
     private var modeBadge: some View {
         switch snapshot.mode {
         case .unknown:
-            Text("offline").font(.caption2).foregroundStyle(.secondary)
+            Text("offline")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .liquidGlassChip()
         case .subscription(let stats):
-            Text(PlanLabel.display(stats.plan)).font(.caption2.bold())
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(Capsule().fill(tint.opacity(0.22)))
+            Text(PlanLabel.display(stats.plan))
+                .font(.caption2.bold())
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .liquidGlassChip()
         }
     }
 
@@ -212,13 +323,6 @@ private struct ProviderSection: View {
                 }
             }
             Spacer()
-        }
-    }
-
-    private var tint: Color {
-        switch snapshot.provider {
-        case .claudeCode: return .orange
-        case .codex: return .green
         }
     }
 }
