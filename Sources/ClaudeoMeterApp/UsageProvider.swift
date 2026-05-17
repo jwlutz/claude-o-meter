@@ -13,22 +13,24 @@ protocol UsageProvider: AnyObject {
 
 enum UsagePreferenceKeys {
     static let showTimer = "showTimer"
-    static let menuBarProvider = "menuBarProvider"
+    static let claudeCodeEnabled = "provider.claudeCode.enabled"
+    static let codexEnabled = "provider.codex.enabled"
 }
 
 enum UsagePreferences {
-    static func orderedProviderIDs(defaults: UserDefaults = .standard) -> [UsageProviderID] {
-        let selected = selectedMenuBarProvider(defaults: defaults)
-        return [selected] + UsageProviderID.allCases.filter { $0 != selected }
+    static func enabledProviderIDs(defaults: UserDefaults = .standard) -> [UsageProviderID] {
+        let providers = UsageProviderID.allCases.filter { provider in
+            let key = enabledKey(for: provider)
+            guard defaults.object(forKey: key) != nil else { return true }
+            return defaults.bool(forKey: key)
+        }
+        return providers.isEmpty ? UsageProviderID.allCases : providers
     }
 
-    static func selectedMenuBarProvider(defaults: UserDefaults = .standard) -> UsageProviderID {
-        defaults.string(forKey: UsagePreferenceKeys.menuBarProvider)
-            .flatMap(UsageProviderID.init(rawValue:))
-            ?? defaultMenuBarProvider()
-    }
-
-    static func defaultMenuBarProvider() -> UsageProviderID {
-        FileManager.default.fileExists(atPath: "/Applications/Codex.app") ? .codex : .claudeCode
+    static func enabledKey(for provider: UsageProviderID) -> String {
+        switch provider {
+        case .claudeCode: return UsagePreferenceKeys.claudeCodeEnabled
+        case .codex: return UsagePreferenceKeys.codexEnabled
+        }
     }
 }

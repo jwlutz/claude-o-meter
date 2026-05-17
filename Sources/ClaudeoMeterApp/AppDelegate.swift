@@ -82,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         let snapshot = store.snapshot
         let showTimer = UserDefaults.standard.object(forKey: UsagePreferenceKeys.showTimer) as? Bool ?? true
-        let providers = UsagePreferences.orderedProviderIDs()
+        let providers = UsagePreferences.enabledProviderIDs()
 
         let img = MenuBarPillImage.render(snapshot: snapshot, providers: providers, showTimer: showTimer)
         img.isTemplate = false

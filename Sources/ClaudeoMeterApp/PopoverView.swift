@@ -5,7 +5,8 @@ struct PopoverView: View {
     @ObservedObject var store: UsageStore
     @State private var tick = Date()
     @AppStorage(UsagePreferenceKeys.showTimer) private var showTimer: Bool = true
-    @AppStorage(UsagePreferenceKeys.menuBarProvider) private var menuBarProviderRaw: String = UsagePreferences.defaultMenuBarProvider().rawValue
+    @AppStorage(UsagePreferenceKeys.claudeCodeEnabled) private var showClaudeCode: Bool = true
+    @AppStorage(UsagePreferenceKeys.codexEnabled) private var showCodex: Bool = true
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -23,7 +24,8 @@ struct PopoverView: View {
         .frame(width: 420)
         .onReceive(ticker) { tick = $0 }
         .onAppear { normalizeProviderPreferences() }
-        .onChange(of: menuBarProviderRaw) { _ in normalizeProviderPreferences() }
+        .onChange(of: showClaudeCode) { _ in normalizeProviderPreferences() }
+        .onChange(of: showCodex) { _ in normalizeProviderPreferences() }
     }
 
     private var header: some View {
@@ -38,7 +40,7 @@ struct PopoverView: View {
     @ViewBuilder
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(orderedProviderIDs.enumerated()), id: \.element.id) { index, provider in
+            ForEach(Array(visibleProviderIDs.enumerated()), id: \.element.id) { index, provider in
                 ProviderSection(
                     snapshot: store.snapshot.provider(provider) ?? ProviderUsageSnapshot(
                         provider: provider,
@@ -48,7 +50,7 @@ struct PopoverView: View {
                     now: tick
                 )
 
-                if index < orderedProviderIDs.count - 1 {
+                if index < visibleProviderIDs.count - 1 {
                     Divider()
                 }
             }
@@ -56,32 +58,23 @@ struct PopoverView: View {
     }
 
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Text("Updated \(relativeTime(store.snapshot.generatedAt))")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Toggle("Timer", isOn: $showTimer)
-                    .toggleStyle(.checkbox)
-                    .font(.caption)
-                Button("Quit") { NSApp.terminate(nil) }
-                    .buttonStyle(.borderless).font(.caption)
-            }
-
-            HStack(spacing: 10) {
-                Text("Top")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Top", selection: $menuBarProviderRaw) {
-                    ForEach(UsageProviderID.allCases) { provider in
-                        Text(provider.displayName).tag(provider.rawValue)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 128)
-
-                Spacer()
-            }
+        HStack(spacing: 10) {
+            Text("Updated \(relativeTime(store.snapshot.generatedAt))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Toggle("Claude", isOn: claudeBinding)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+            Toggle("Codex", isOn: codexBinding)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+            Toggle("Timer", isOn: $showTimer)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+            Button("Quit") { NSApp.terminate(nil) }
+                .buttonStyle(.borderless)
+                .font(.caption)
         }
     }
 
@@ -92,14 +85,37 @@ struct PopoverView: View {
         return "\(s / 60)m ago"
     }
 
-    private var orderedProviderIDs: [UsageProviderID] {
-        let selected = UsageProviderID(rawValue: menuBarProviderRaw) ?? UsagePreferences.defaultMenuBarProvider()
-        return [selected] + UsageProviderID.allCases.filter { $0 != selected }
+    private var visibleProviderIDs: [UsageProviderID] {
+        var providers: [UsageProviderID] = []
+        if showClaudeCode { providers.append(.claudeCode) }
+        if showCodex { providers.append(.codex) }
+        return providers.isEmpty ? UsageProviderID.allCases : providers
+    }
+
+    private var claudeBinding: Binding<Bool> {
+        Binding(
+            get: { showClaudeCode },
+            set: { newValue in
+                if !newValue && !showCodex { showCodex = true }
+                showClaudeCode = newValue
+            }
+        )
+    }
+
+    private var codexBinding: Binding<Bool> {
+        Binding(
+            get: { showCodex },
+            set: { newValue in
+                if !newValue && !showClaudeCode { showClaudeCode = true }
+                showCodex = newValue
+            }
+        )
     }
 
     private func normalizeProviderPreferences() {
-        if UsageProviderID(rawValue: menuBarProviderRaw) == nil {
-            menuBarProviderRaw = UsagePreferences.defaultMenuBarProvider().rawValue
+        if !showClaudeCode && !showCodex {
+            showClaudeCode = true
+            showCodex = true
         }
     }
 }
