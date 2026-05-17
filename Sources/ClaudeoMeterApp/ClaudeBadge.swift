@@ -240,7 +240,8 @@ enum MenuBarPillImage {
     static func render(snapshot: UsageSnapshot,
                        providers: [UsageProviderID],
                        showTimer: Bool,
-                       now: Date = Date()) -> NSImage {
+                       now: Date = Date(),
+                       appearance: NSAppearance? = nil) -> NSImage {
         let pillWidth = showTimer ? timerWidth : iconOnlyWidth
         let size = NSSize(width: width(providers: providers, showTimer: showTimer), height: height)
         let result = NSImage(size: size)
@@ -259,7 +260,8 @@ enum MenuBarPillImage {
                 providerSnapshot: snapshot.provider(provider),
                 showTimer: showTimer,
                 frame: frame,
-                now: now
+                now: now,
+                appearance: appearance
             )
         }
 
@@ -271,12 +273,14 @@ enum MenuBarPillImage {
                                  providerSnapshot: ProviderUsageSnapshot?,
                                  showTimer: Bool,
                                  frame: NSRect,
-                                 now: Date) {
+                                 now: Date,
+                                 appearance: NSAppearance?) {
         let radius = frame.height / 2
         let capsule = NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius)
+        let textColor = adaptiveStatusTextColor(appearance: appearance)
         NSColor.clear.setFill()
         capsule.fill()
-        NSColor.labelColor.withAlphaComponent(0.24).setStroke()
+        textColor.withAlphaComponent(0.24).setStroke()
         capsule.lineWidth = 1
         capsule.stroke()
 
@@ -290,7 +294,7 @@ enum MenuBarPillImage {
         let timer = window?.resetText(relativeTo: now) ?? "--"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: textColor,
         ]
         let textSize = timer.size(withAttributes: attributes)
         let textRect = NSRect(
@@ -300,6 +304,26 @@ enum MenuBarPillImage {
             height: textSize.height
         )
         timer.draw(in: textRect, withAttributes: attributes)
+    }
+
+    private static func adaptiveStatusTextColor(appearance: NSAppearance?) -> NSColor {
+        guard let appearance else { return .black }
+        let match = appearance.bestMatch(from: [
+            .darkAqua,
+            .aqua,
+            .vibrantDark,
+            .vibrantLight,
+            .accessibilityHighContrastDarkAqua,
+            .accessibilityHighContrastAqua,
+            .accessibilityHighContrastVibrantDark,
+            .accessibilityHighContrastVibrantLight,
+        ])
+        switch match {
+        case .darkAqua, .vibrantDark, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastVibrantDark:
+            return .white
+        default:
+            return .black
+        }
     }
 }
 

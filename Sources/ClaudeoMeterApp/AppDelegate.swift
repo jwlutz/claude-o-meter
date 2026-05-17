@@ -97,7 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let providers = UsagePreferences.enabledProviderIDs()
         let width = MenuBarPillImage.width(providers: providers, showTimer: showTimer)
         let now = Date()
-        let renderKey = statusRenderKey(snapshot: snapshot, providers: providers, showTimer: showTimer, now: now)
+        let appearance = button.effectiveAppearance
+        let appearanceKey = statusAppearanceKey(appearance)
+        let renderKey = statusRenderKey(
+            snapshot: snapshot,
+            providers: providers,
+            showTimer: showTimer,
+            now: now,
+            appearanceKey: appearanceKey
+        )
 
         if popover?.isShown == true {
             if abs(statusItem.length - width) > 0.5 || lastRenderedStatusKey != renderKey {
@@ -115,7 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             snapshot: snapshot,
             providers: providers,
             showTimer: showTimer,
-            now: now
+            now: now,
+            appearance: appearance
         )
         statusItem.length = width
         button.image = image
@@ -129,7 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         snapshot: UsageSnapshot,
         providers: [UsageProviderID],
         showTimer: Bool,
-        now: Date
+        now: Date,
+        appearanceKey: String
     ) -> String {
         let providerKeys = providers.map { provider in
             let window = primaryWindow(for: provider, in: snapshot)
@@ -137,7 +147,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let timer = showTimer ? (window?.resetText(relativeTo: now) ?? "--") : "hidden"
             return "\(provider.rawValue):\(usage):\(timer)"
         }
-        return "\(showTimer):\(providers.map(\.rawValue).joined(separator: ",")):\(providerKeys.joined(separator: "|"))"
+        return "\(appearanceKey):\(showTimer):\(providers.map(\.rawValue).joined(separator: ",")):\(providerKeys.joined(separator: "|"))"
+    }
+
+    private func statusAppearanceKey(_ appearance: NSAppearance) -> String {
+        appearance.bestMatch(from: [
+            .darkAqua,
+            .aqua,
+            .vibrantDark,
+            .vibrantLight,
+            .accessibilityHighContrastDarkAqua,
+            .accessibilityHighContrastAqua,
+            .accessibilityHighContrastVibrantDark,
+            .accessibilityHighContrastVibrantLight,
+        ])?.rawValue ?? appearance.name.rawValue
     }
 
     private func primaryWindow(for provider: UsageProviderID, in snapshot: UsageSnapshot) -> UsageWindow? {
