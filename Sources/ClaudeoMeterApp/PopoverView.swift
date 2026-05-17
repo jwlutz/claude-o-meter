@@ -45,10 +45,12 @@ enum PopoverMetrics {
 
         let rowHeight: CGFloat = 42
         let extraRowHeight: CGFloat = rowHeight + 21
+        let staleNoticeHeight: CGFloat = snapshot?.staleReason == nil ? 0 : 20
         return headerHeight
             + headerToRows
             + rowHeight
             + CGFloat(max(0, rowCount - 1)) * extraRowHeight
+            + staleNoticeHeight
     }
 
     private static func estimatedWindowCount(for provider: UsageProviderID) -> Int {
@@ -279,6 +281,7 @@ private struct ProviderSection: View {
                     if index > 0 { Divider() }
                     UsageWindowRow(provider: snapshot.provider, window: window, now: now)
                 }
+                staleNotice
             }
         }
     }
@@ -294,11 +297,21 @@ private struct ProviderSection: View {
                 .padding(.vertical, 3)
                 .liquidGlassChip()
         case .subscription(let stats):
-            Text(PlanLabel.display(stats.plan))
-                .font(.caption2.bold())
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .liquidGlassChip()
+            HStack(spacing: 5) {
+                Text(PlanLabel.display(stats.plan))
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .liquidGlassChip()
+                if snapshot.staleReason != nil {
+                    Text("stale")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .liquidGlassChip()
+                }
+            }
         }
     }
 
@@ -324,6 +337,23 @@ private struct ProviderSection: View {
             }
             Spacer()
         }
+    }
+
+    @ViewBuilder
+    private var staleNotice: some View {
+        if snapshot.staleReason != nil {
+            Text("Last good update \(relativeTime(snapshot.generatedAt)); retrying.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func relativeTime(_ date: Date) -> String {
+        let s = Int(now.timeIntervalSince(date))
+        if s < 5 { return "just now" }
+        if s < 60 { return "\(s)s ago" }
+        return "\(s / 60)m ago"
     }
 }
 

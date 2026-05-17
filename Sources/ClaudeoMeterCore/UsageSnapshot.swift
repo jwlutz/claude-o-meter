@@ -37,13 +37,18 @@ public struct ProviderUsageSnapshot: Identifiable, Equatable, Sendable {
     public let provider: UsageProviderID
     public let generatedAt: Date
     public let mode: UsageMode
+    public let staleReason: String?
 
     public var id: UsageProviderID { provider }
 
-    public init(provider: UsageProviderID, generatedAt: Date, mode: UsageMode) {
+    public init(provider: UsageProviderID,
+                generatedAt: Date,
+                mode: UsageMode,
+                staleReason: String? = nil) {
         self.provider = provider
         self.generatedAt = generatedAt
         self.mode = mode
+        self.staleReason = staleReason
     }
 }
 

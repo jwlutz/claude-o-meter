@@ -10,7 +10,7 @@ final class UsageStore: ObservableObject {
     private static let log = Logger(subsystem: "com.claude-o-meter.menubar", category: "usage")
     private static let probeInterval: TimeInterval = 60
     private static let publishDebounce: TimeInterval = 0.05
-    private static let minimumProviderRefreshInterval: TimeInterval = 5
+    private static let retryBaseInterval: TimeInterval = 5
     private static let maxFailureBackoff: TimeInterval = 300
 
     private let providers: [UsageProviderID: UsageProvider]
@@ -91,7 +91,7 @@ final class UsageStore: ObservableObject {
                     mode = .subscription(stats)
                     outcome = "ok"
                     self.failureCounts[id] = 0
-                    self.nextAllowedProbeAt[id] = Date().addingTimeInterval(Self.minimumProviderRefreshInterval)
+                    self.nextAllowedProbeAt[id] = Date().addingTimeInterval(Self.successRefreshInterval(for: id))
                 case .failed(let r):
                     mode = .unknown(r)
                     outcome = "failed"
@@ -103,9 +103,16 @@ final class UsageStore: ObservableObject {
                     let failures = (self.failureCounts[id] ?? 0) + 1
                     self.failureCounts[id] = failures
                     self.nextAllowedProbeAt[id] = Date().addingTimeInterval(Self.failureBackoff(for: failures))
-                    if case .subscription = self.providerSnapshots[id]?.mode {
+                    if let previous = self.providerSnapshots[id],
+                       case .subscription = previous.mode {
                         let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
                         Self.log.info("\(id.rawValue, privacy: .public) probe finished in \(elapsedMs, privacy: .public)ms: \(outcome, privacy: .public); preserving last successful snapshot")
+                        self.providerSnapshots[id] = ProviderUsageSnapshot(
+                            provider: id,
+                            generatedAt: previous.generatedAt,
+                            mode: previous.mode,
+                            staleReason: r
+                        )
                         self.publishSnapshotSoon()
                         return
                     }
@@ -119,8 +126,15 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    private static func successRefreshInterval(for provider: UsageProviderID) -> TimeInterval {
+        switch provider {
+        case .claudeCode: return 60
+        case .codex: return 300
+        }
+    }
+
     private static func failureBackoff(for failures: Int) -> TimeInterval {
-        min(maxFailureBackoff, pow(2, Double(min(failures, 6))) * minimumProviderRefreshInterval)
+        min(maxFailureBackoff, pow(2, Double(min(failures, 6))) * retryBaseInterval)
     }
 
     private func publishSnapshotSoon() {

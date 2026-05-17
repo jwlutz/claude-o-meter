@@ -68,7 +68,7 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
             lock.unlock()
 
             for line in completeLines {
-                guard let parsed = Self.parseRateLimitLine(line) else { continue }
+                guard let parsed = Self.probeResult(from: CodexRateLimitParser.parseLine(line)) else { continue }
                 lock.lock()
                 if !didFinish {
                     result = parsed
@@ -111,7 +111,7 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
         lock.lock()
         let bufferedOutput = buffer + "\n" + stdoutTail
         if result == nil {
-            result = Self.parseRateLimitOutput(bufferedOutput)
+            result = Self.probeResult(from: CodexRateLimitParser.parseOutput(bufferedOutput))
         }
         let parsed = result
         lock.unlock()
@@ -179,55 +179,16 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
         return executable
     }
 
-    private static func parseRateLimitOutput(_ output: String) -> ProviderProbeResult? {
-        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
-            if let parsed = parseRateLimitLine(line) {
-                return parsed
-            }
+    private static func probeResult(from parseResult: Result<ProviderUsageStats, CodexRateLimitParseError>?) -> ProviderProbeResult? {
+        guard let parseResult else { return nil }
+        switch parseResult {
+        case .success(let stats):
+            return .ok(stats)
+        case .failure(.authRequired(let message)):
+            return .failed(message)
+        case .failure(.transient(let message)):
+            return .transientFailure(message)
         }
-        return nil
-    }
-
-    private static func parseRateLimitLine(_ line: String) -> ProviderProbeResult? {
-        guard let data = line.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(CodexRPCEnvelope.self, from: data),
-              envelope.id == 2
-        else { return nil }
-
-        if let error = envelope.error {
-            return classifyError(error.message ?? "Codex rate limits unavailable.")
-        }
-        guard let response = envelope.result else {
-            return .transientFailure("Codex rate limits are temporarily unavailable.")
-        }
-
-        guard let snapshot = response.preferredSnapshot else {
-            return .transientFailure("Codex rate limit response did not include a Codex limit.")
-        }
-        let windows = snapshot.usageWindows
-        guard !windows.isEmpty else {
-            return .transientFailure("Codex rate limit response did not include usage windows.")
-        }
-
-        return .ok(ProviderUsageStats(
-            provider: .codex,
-            plan: snapshot.planType ?? "codex",
-            windows: windows,
-            credits: snapshot.credits?.usageCredits,
-            queriedAt: Date()
-        ))
-    }
-
-    private static func classifyError(_ message: String) -> ProviderProbeResult {
-        let lower = message.lowercased()
-        if lower.contains("auth")
-            || lower.contains("login")
-            || lower.contains("log in")
-            || lower.contains("sign in")
-            || lower.contains("unauthorized") {
-            return .failed("Codex is not signed in. Open Codex and sign in, then refresh.")
-        }
-        return .transientFailure("Codex rate limits are temporarily unavailable: \(message)")
     }
 
     private static func firstUsefulLine(in text: String) -> String? {
@@ -251,79 +212,5 @@ private extension ProviderProbeResult {
     var isRetryableCodexFailure: Bool {
         if case .transientFailure = self { return true }
         return false
-    }
-}
-
-private struct CodexRPCEnvelope: Decodable {
-    let id: Int
-    let result: CodexRateLimitsResponse?
-    let error: CodexRPCError?
-}
-
-private struct CodexRPCError: Decodable {
-    let message: String?
-}
-
-private struct CodexRateLimitsResponse: Decodable {
-    let rateLimits: CodexRateLimitSnapshot?
-    let rateLimitsByLimitId: [String: CodexRateLimitSnapshot]?
-
-    var preferredSnapshot: CodexRateLimitSnapshot? {
-        rateLimitsByLimitId?["codex"]
-            ?? rateLimitsByLimitId?.values.first { !$0.usageWindows.isEmpty }
-            ?? rateLimits
-    }
-}
-
-private struct CodexRateLimitSnapshot: Decodable {
-    let limitId: String?
-    let limitName: String?
-    let primary: CodexRateLimitWindow?
-    let secondary: CodexRateLimitWindow?
-    let credits: CodexCreditsSnapshot?
-    let planType: String?
-    let rateLimitReachedType: String?
-
-    var usageWindows: [UsageWindow] {
-        var windows: [UsageWindow] = []
-        if let primary {
-            windows.append(primary.usageWindow(
-                id: "fiveHour",
-                title: primary.windowDurationMins == 300 ? "5-hour window" : "Primary window"
-            ))
-        }
-        if let secondary {
-            windows.append(secondary.usageWindow(
-                id: "weekly",
-                title: secondary.windowDurationMins == 10_080 ? "Weekly" : "Secondary window"
-            ))
-        }
-        return windows
-    }
-}
-
-private struct CodexRateLimitWindow: Decodable {
-    let usedPercent: Double
-    let windowDurationMins: Int?
-    let resetsAt: Double?
-
-    func usageWindow(id: String, title: String) -> UsageWindow {
-        UsageWindow(
-            id: id,
-            title: title,
-            usedPercent: usedPercent,
-            resetAt: resetsAt.map { Date(timeIntervalSince1970: $0) },
-            durationMinutes: windowDurationMins
-        )
-    }
-}
-
-private struct CodexCreditsSnapshot: Decodable {
-    let hasCredits: Bool
-    let unlimited: Bool
-    let balance: String?
-
-    var usageCredits: UsageCredits {
-        UsageCredits(hasCredits: hasCredits, unlimited: unlimited, balance: balance)
     }
 }

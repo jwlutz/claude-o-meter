@@ -87,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
               let bundleIdentifier = app.bundleIdentifier,
               Self.providerBundleIDs.contains(bundleIdentifier)
         else { return }
-        store.refresh()
+        store.refresh(force: true)
     }
 
     private func renderStatusItem() {

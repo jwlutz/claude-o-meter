@@ -25,7 +25,7 @@ if CommandLine.arguments.contains("--probe-once") {
         }
         sem.signal()
     }
-    _ = sem.wait(timeout: .now() + (providerID == .codex ? 100 : 30))
+    _ = sem.wait(timeout: .now() + (providerID == .codex ? 190 : 30))
     print(line)
     exit(0)
 }

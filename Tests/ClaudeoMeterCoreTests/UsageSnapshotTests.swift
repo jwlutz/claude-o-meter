@@ -7,7 +7,8 @@ final class UsageSnapshotTests: XCTestCase {
         let claude = ProviderUsageSnapshot(
             provider: .claudeCode,
             generatedAt: generatedAt,
-            mode: .unknown("missing")
+            mode: .unknown("missing"),
+            staleReason: "retrying"
         )
         let codex = ProviderUsageSnapshot(
             provider: .codex,
@@ -19,6 +20,7 @@ final class UsageSnapshotTests: XCTestCase {
 
         XCTAssertEqual(snapshot.provider(.claudeCode), claude)
         XCTAssertEqual(snapshot.provider(.codex), codex)
+        XCTAssertEqual(snapshot.provider(.claudeCode)?.staleReason, "retrying")
     }
 
     func testStatsPreferFiveHourAndWeeklyWindows() {
