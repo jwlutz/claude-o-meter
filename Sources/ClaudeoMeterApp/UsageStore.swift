@@ -98,6 +98,18 @@ final class UsageStore: ObservableObject {
                     let failures = (self.failureCounts[id] ?? 0) + 1
                     self.failureCounts[id] = failures
                     self.nextAllowedProbeAt[id] = Date().addingTimeInterval(Self.failureBackoff(for: failures))
+                case .transientFailure(let r):
+                    outcome = "transient"
+                    let failures = (self.failureCounts[id] ?? 0) + 1
+                    self.failureCounts[id] = failures
+                    self.nextAllowedProbeAt[id] = Date().addingTimeInterval(Self.failureBackoff(for: failures))
+                    if case .subscription = self.providerSnapshots[id]?.mode {
+                        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+                        Self.log.info("\(id.rawValue, privacy: .public) probe finished in \(elapsedMs, privacy: .public)ms: \(outcome, privacy: .public); preserving last successful snapshot")
+                        self.publishSnapshotSoon()
+                        return
+                    }
+                    mode = .unknown(r)
                 }
                 let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
                 Self.log.info("\(id.rawValue, privacy: .public) probe finished in \(elapsedMs, privacy: .public)ms: \(outcome, privacy: .public)")

@@ -20,10 +20,12 @@ if CommandLine.arguments.contains("--probe-once") {
             line = "OK provider=\(s.provider.displayName) plan=\(PlanLabel.display(s.plan)) 5h=\(percent(five)) week=\(percent(week)) reset5h=\(five?.resetText() ?? "-") resetWeek=\(week?.resetText() ?? "-")"
         case .failed(let r):
             line = "FAILED: \(r)"
+        case .transientFailure(let r):
+            line = "TRANSIENT: \(r)"
         }
         sem.signal()
     }
-    _ = sem.wait(timeout: .now() + 30)
+    _ = sem.wait(timeout: .now() + (providerID == .codex ? 100 : 30))
     print(line)
     exit(0)
 }

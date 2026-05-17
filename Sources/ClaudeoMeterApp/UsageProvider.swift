@@ -4,6 +4,7 @@ import ClaudeoMeterCore
 enum ProviderProbeResult {
     case ok(ProviderUsageStats)
     case failed(String)
+    case transientFailure(String)
 }
 
 protocol UsageProvider: AnyObject {

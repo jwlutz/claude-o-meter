@@ -1,8 +1,12 @@
 import Foundation
+import Darwin
 import ClaudeoMeterCore
 
 final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
     let id: UsageProviderID = .codex
+
+    private static let maxAttempts = 2
+    private static let responseTimeoutSeconds: TimeInterval = 90
 
     private let queue = DispatchQueue(label: "ClaudeoMeter.codex-probe", qos: .background)
     private var inFlight = false
@@ -22,15 +26,30 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
             return .failed("Codex.app not found. Install Codex and sign in, then refresh.")
         }
 
+        var lastResult: ProbeAttemptResult?
+        for attempt in 1...Self.maxAttempts {
+            let result = runAttempt(executable: executable)
+            if !result.shouldRetry || attempt == Self.maxAttempts {
+                return result.probeResult
+            }
+            lastResult = result
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+
+        return lastResult?.probeResult ?? .transientFailure("Codex usage is temporarily unavailable. Refresh again in a moment.")
+    }
+
+    private func runAttempt(executable: URL) -> ProbeAttemptResult {
         let process = Process()
         process.executableURL = executable
         process.arguments = ["app-server", "--listen", "stdio://"]
 
         let stdin = Pipe()
         let stdout = Pipe()
+        let stderr = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
+        process.standardError = stderr
 
         let lock = NSLock()
         let sem = DispatchSemaphore(value: 0)
@@ -64,7 +83,10 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
             try process.run()
         } catch {
             stdout.fileHandleForReading.readabilityHandler = nil
-            return .failed("Couldn't start Codex usage probe: \(error.localizedDescription)")
+            return ProbeAttemptResult(
+                probeResult: .transientFailure("Couldn't start Codex usage probe: \(error.localizedDescription)"),
+                shouldRetry: true
+            )
         }
 
         let initialize = """
@@ -76,17 +98,52 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
             stdin.fileHandleForWriting.write(data)
         }
 
-        _ = sem.wait(timeout: .now() + 15)
+        let waitResult = sem.wait(timeout: .now() + Self.responseTimeoutSeconds)
 
         stdout.fileHandleForReading.readabilityHandler = nil
         try? stdin.fileHandleForWriting.close()
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
+
+        stopProcess(process)
+
+        let stdoutTail = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderrText = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        lock.lock()
+        let bufferedOutput = buffer + "\n" + stdoutTail
+        if result == nil {
+            result = Self.parseRateLimitOutput(bufferedOutput)
+        }
+        let parsed = result
+        lock.unlock()
+
+        if let parsed {
+            return ProbeAttemptResult(probeResult: parsed, shouldRetry: parsed.isRetryableCodexFailure)
         }
 
-        if let result { return result }
-        return .failed("Codex usage unavailable. Open Codex, sign in, then refresh.")
+        if waitResult == .timedOut {
+            return ProbeAttemptResult(
+                probeResult: .transientFailure("Codex usage is still starting up. Codex is open, but its local app-server did not answer yet."),
+                shouldRetry: true
+            )
+        }
+
+        let detail = Self.firstUsefulLine(in: stderrText)
+        let message = detail.map { "Codex usage is temporarily unavailable: \($0)" }
+            ?? "Codex usage is temporarily unavailable. Refresh again in a moment."
+        return ProbeAttemptResult(probeResult: .transientFailure(message), shouldRetry: true)
+    }
+
+    private func stopProcess(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let deadline = Date().addingTimeInterval(1)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
     }
 
     private func codexExecutable() -> URL? {
@@ -122,6 +179,15 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
         return executable
     }
 
+    private static func parseRateLimitOutput(_ output: String) -> ProviderProbeResult? {
+        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            if let parsed = parseRateLimitLine(line) {
+                return parsed
+            }
+        }
+        return nil
+    }
+
     private static func parseRateLimitLine(_ line: String) -> ProviderProbeResult? {
         guard let data = line.data(using: .utf8),
               let envelope = try? JSONDecoder().decode(CodexRPCEnvelope.self, from: data),
@@ -129,16 +195,18 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
         else { return nil }
 
         if let error = envelope.error {
-            return .failed(error.message ?? "Codex rate limits unavailable.")
+            return classifyError(error.message ?? "Codex rate limits unavailable.")
         }
         guard let response = envelope.result else {
-            return .failed("Codex rate limits unavailable.")
+            return .transientFailure("Codex rate limits are temporarily unavailable.")
         }
 
-        let snapshot = response.rateLimitsByLimitId?["codex"] ?? response.rateLimits
+        guard let snapshot = response.preferredSnapshot else {
+            return .transientFailure("Codex rate limit response did not include a Codex limit.")
+        }
         let windows = snapshot.usageWindows
         guard !windows.isEmpty else {
-            return .failed("Codex rate limit response did not include usage windows.")
+            return .transientFailure("Codex rate limit response did not include usage windows.")
         }
 
         return .ok(ProviderUsageStats(
@@ -148,6 +216,41 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
             credits: snapshot.credits?.usageCredits,
             queriedAt: Date()
         ))
+    }
+
+    private static func classifyError(_ message: String) -> ProviderProbeResult {
+        let lower = message.lowercased()
+        if lower.contains("auth")
+            || lower.contains("login")
+            || lower.contains("log in")
+            || lower.contains("sign in")
+            || lower.contains("unauthorized") {
+            return .failed("Codex is not signed in. Open Codex and sign in, then refresh.")
+        }
+        return .transientFailure("Codex rate limits are temporarily unavailable: \(message)")
+    }
+
+    private static func firstUsefulLine(in text: String) -> String? {
+        text.split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { line in
+                !line.isEmpty
+                    && !line.contains("failed to warm featured plugin ids cache")
+                    && !line.contains("failed to auto-upgrade configured marketplace")
+                    && !line.contains("failed to sync curated plugins repo")
+            }
+    }
+}
+
+private struct ProbeAttemptResult {
+    let probeResult: ProviderProbeResult
+    let shouldRetry: Bool
+}
+
+private extension ProviderProbeResult {
+    var isRetryableCodexFailure: Bool {
+        if case .transientFailure = self { return true }
+        return false
     }
 }
 
@@ -162,8 +265,14 @@ private struct CodexRPCError: Decodable {
 }
 
 private struct CodexRateLimitsResponse: Decodable {
-    let rateLimits: CodexRateLimitSnapshot
+    let rateLimits: CodexRateLimitSnapshot?
     let rateLimitsByLimitId: [String: CodexRateLimitSnapshot]?
+
+    var preferredSnapshot: CodexRateLimitSnapshot? {
+        rateLimitsByLimitId?["codex"]
+            ?? rateLimitsByLimitId?.values.first { !$0.usageWindows.isEmpty }
+            ?? rateLimits
+    }
 }
 
 private struct CodexRateLimitSnapshot: Decodable {
