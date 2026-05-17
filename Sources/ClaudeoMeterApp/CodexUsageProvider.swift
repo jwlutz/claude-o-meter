@@ -6,6 +6,7 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "ClaudeoMeter.codex-probe", qos: .background)
     private var inFlight = false
+    private var cachedExecutable: URL?
 
     func run(completion: @escaping (ProviderProbeResult) -> Void) {
         if inFlight { return }
@@ -89,9 +90,16 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
     }
 
     private func codexExecutable() -> URL? {
+        if let cachedExecutable,
+           FileManager.default.isExecutableFile(atPath: cachedExecutable.path) {
+            return cachedExecutable
+        }
+
         let appBundledPath = "/Applications/Codex.app/Contents/Resources/codex"
         if FileManager.default.isExecutableFile(atPath: appBundledPath) {
-            return URL(fileURLWithPath: appBundledPath)
+            let executable = URL(fileURLWithPath: appBundledPath)
+            cachedExecutable = executable
+            return executable
         }
 
         let process = Process()
@@ -109,7 +117,9 @@ final class CodexUsageProvider: UsageProvider, @unchecked Sendable {
               !path.isEmpty,
               FileManager.default.isExecutableFile(atPath: path)
         else { return nil }
-        return URL(fileURLWithPath: path)
+        let executable = URL(fileURLWithPath: path)
+        cachedExecutable = executable
+        return executable
     }
 
     private static func parseRateLimitLine(_ line: String) -> ProviderProbeResult? {

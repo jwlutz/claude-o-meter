@@ -1,10 +1,13 @@
 import AppKit
 import SwiftUI
 import Combine
+import os
 import ClaudeoMeterCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private static let log = Logger(subsystem: "com.claude-o-meter.menubar", category: "ui")
+
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let store = UsageStore()
@@ -107,15 +110,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
            lastRenderedStatusKey == renderKey {
             return
         }
-        statusItem.length = width
-        button.image = MenuBarPillImage.render(
+        let renderStartedAt = CFAbsoluteTimeGetCurrent()
+        let image = MenuBarPillImage.render(
             snapshot: snapshot,
             providers: providers,
             showTimer: showTimer,
             now: now
         )
+        statusItem.length = width
+        button.image = image
         button.title = ""
         lastRenderedStatusKey = renderKey
+        let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - renderStartedAt) * 1000)
+        Self.log.debug("Rendered status item in \(elapsedMs, privacy: .public)ms")
     }
 
     private func statusRenderKey(

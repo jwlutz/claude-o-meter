@@ -20,6 +20,7 @@ final class ClaudeUsageProvider: UsageProvider, @unchecked Sendable {
     let id: UsageProviderID = .claudeCode
     private let queue = DispatchQueue(label: "ClaudeoMeter.probe", qos: .background)
     private var inFlight = false
+    private var cachedAESKey: Data?
 
     func run(completion: @escaping (ProviderProbeResult) -> Void) {
         if inFlight { return }
@@ -31,12 +32,8 @@ final class ClaudeUsageProvider: UsageProvider, @unchecked Sendable {
     }
 
     private func runOnce() -> ProviderProbeResult {
-        let (keyOpt, keyErr) = readKeychainKey()
-        guard let keyPw = keyOpt else { return .failed(humanize(keyErr ?? "keychain")) }
-
-        let aesKey = pbkdf2(password: keyPw,
-                            salt: Data("saltysalt".utf8),
-                            iterations: 1003, keyLen: 16)
+        let (aesKeyOpt, keyErr) = chromiumAESKey()
+        guard let aesKey = aesKeyOpt else { return .failed(humanize(keyErr ?? "keychain")) }
 
         guard let cookies = readCookies(aesKey: aesKey) else {
             return .failed(humanize("no_cookies"))
@@ -51,6 +48,22 @@ final class ClaudeUsageProvider: UsageProvider, @unchecked Sendable {
     }
 
     // MARK: - Keychain
+
+    private func chromiumAESKey() -> (Data?, String?) {
+        if let cachedAESKey { return (cachedAESKey, nil) }
+
+        let (keyOpt, keyErr) = readKeychainKey()
+        guard let keyPw = keyOpt else { return (nil, keyErr) }
+
+        let aesKey = pbkdf2(
+            password: keyPw,
+            salt: Data("saltysalt".utf8),
+            iterations: 1003,
+            keyLen: 16
+        )
+        cachedAESKey = aesKey
+        return (aesKey, nil)
+    }
 
     private func readKeychainKey() -> (String?, String?) {
         let p = Process()

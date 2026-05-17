@@ -108,7 +108,7 @@ struct PopoverView: View {
         HStack {
             Text("Claude-o-Meter").font(.headline)
             Spacer()
-            Button { store.refresh() } label: {
+            Button { store.refresh(force: true) } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 13, weight: .semibold))
                     .frame(width: 16, height: 16)

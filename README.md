@@ -146,6 +146,8 @@ claude-o-meter/
     build.sh                            # build + ad-hoc sign (macOS)
     install.sh                          # source-tree installer (macOS)
     installer.sh                        # bundled-binary installer (macOS)
+    launch-agent.sh                     # shared LaunchAgent loader helper
+    smoke-macos.sh                      # local macOS packaging smoke check
     uninstall.sh
     clean-keychain.sh
   .github/workflows/release.yml         # CI: builds both, attaches to tags

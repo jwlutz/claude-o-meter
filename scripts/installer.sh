@@ -5,6 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/launch-agent.sh"
+
 INSTALL_DIR="$HOME/Library/Application Support/Claude-o-Meter/bin"
 INSTALL_PATH="$INSTALL_DIR/claude-o-meter"
 LOG_PATH="$HOME/Library/Logs/claude-o-meter.log"
@@ -53,11 +55,8 @@ cat > "$PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-# Bootstrap fresh — tolerate any prior install (current or legacy label).
-launchctl bootout "gui/$(id -u)/com.claudometer.menubar" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/$LABEL"                  2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-launchctl kickstart -k "gui/$(id -u)/$LABEL"
+# Bootstrap fresh - tolerate any prior install (current or legacy label).
+load_claude_o_meter_agent "$LABEL" "$PLIST_PATH"
 
 cat <<DONE
 

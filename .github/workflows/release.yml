@@ -34,10 +34,16 @@ jobs:
           mkdir -p "$STAGE"
           cp .build/release/claude-o-meter "$STAGE/"
           cp scripts/installer.sh "$STAGE/install.sh"
+          cp scripts/launch-agent.sh "$STAGE/launch-agent.sh"
           cp scripts/uninstall.sh   "$STAGE/uninstall.sh"
           cp README.md              "$STAGE/README.md"
           chmod +x "$STAGE/claude-o-meter" "$STAGE/install.sh" "$STAGE/uninstall.sh"
           tar czf "claude-o-meter-macos-arm64.tar.gz" "$STAGE"
+          tar -tzf "claude-o-meter-macos-arm64.tar.gz" | grep -qx "$STAGE/claude-o-meter"
+          tar -tzf "claude-o-meter-macos-arm64.tar.gz" | grep -qx "$STAGE/install.sh"
+          tar -tzf "claude-o-meter-macos-arm64.tar.gz" | grep -qx "$STAGE/launch-agent.sh"
+          tar -tzf "claude-o-meter-macos-arm64.tar.gz" | grep -qx "$STAGE/uninstall.sh"
+          tar -tzf "claude-o-meter-macos-arm64.tar.gz" | grep -qx "$STAGE/README.md"
           shasum -a 256 "claude-o-meter-macos-arm64.tar.gz"
 
       - uses: actions/upload-artifact@v4
