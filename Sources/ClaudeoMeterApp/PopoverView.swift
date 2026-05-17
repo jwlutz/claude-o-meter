@@ -1,6 +1,40 @@
 import SwiftUI
 import ClaudeoMeterCore
 
+enum PopoverMetrics {
+    static let width: CGFloat = 420
+    static let maxContentHeight: CGFloat = 400
+
+    static func contentSize(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> CGSize {
+        CGSize(width: width, height: preferredHeight(snapshot: snapshot, providers: providers))
+    }
+
+    private static func preferredHeight(snapshot: UsageSnapshot, providers: [UsageProviderID]) -> CGFloat {
+        let chromeHeight: CGFloat = 120
+        let providerGap = CGFloat(max(0, providers.count - 1)) * 12
+        let contentHeight = providers.reduce(CGFloat.zero) { total, provider in
+            total + providerHeight(snapshot.provider(provider))
+        } + providerGap
+        let scrollHeight = min(contentHeight, maxContentHeight)
+        return min(max(chromeHeight + scrollHeight, 240), 560)
+    }
+
+    private static func providerHeight(_ snapshot: ProviderUsageSnapshot?) -> CGFloat {
+        let rowCount: Int
+        if case .subscription(let stats) = snapshot?.mode {
+            rowCount = max(1, stats.windows.count)
+        } else {
+            rowCount = 1
+        }
+
+        let headerHeight: CGFloat = 24
+        let headerToRows: CGFloat = 10
+        let rowHeight: CGFloat = 64
+        let dividerSpacing = CGFloat(max(0, rowCount - 1)) * 13
+        return headerHeight + headerToRows + CGFloat(rowCount) * rowHeight + dividerSpacing
+    }
+}
+
 struct PopoverView: View {
     @ObservedObject var store: UsageStore
     @State private var tick = Date()
@@ -16,12 +50,12 @@ struct PopoverView: View {
             ScrollView {
                 content
             }
-            .frame(maxHeight: 400)
+            .frame(maxHeight: PopoverMetrics.maxContentHeight)
             Divider().padding(.vertical, 8)
             footer
         }
         .padding(16)
-        .frame(width: 420)
+        .frame(width: PopoverMetrics.width)
         .onReceive(ticker) { tick = $0 }
         .onAppear { normalizeProviderPreferences() }
         .onChange(of: showClaudeCode) { _ in normalizeProviderPreferences() }

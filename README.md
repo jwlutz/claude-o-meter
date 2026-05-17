@@ -14,7 +14,7 @@ pills. Each pill keeps its provider logo and reset timer together, and the
 logo drains clockwise as the 5-hour utilization rises: bright when fresh,
 gray ghost when exhausted.
 
-![Claude-o-Meter menu bar icon and popover](docs/screenshot.png)
+![Claude-o-Meter menu bar icon and popover](docs/screenshot-macos-codex.png)
 
 ## Install
 

@@ -31,15 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentSize = NSSize(width: 420, height: 520)
         popover.contentViewController = NSHostingController(rootView: PopoverView(store: store))
+        updatePopoverSize()
 
         renderStatusItem()
         store.refresh()
 
         cancellable = store.$snapshot
             .receive(on: RunLoop.main)
-            .sink { [weak self] (_: UsageSnapshot) in self?.renderStatusItem() }
+            .sink { [weak self] (_: UsageSnapshot) in
+                self?.updatePopoverSize()
+                self?.renderStatusItem()
+            }
 
         // Re-render when the user toggles the popover checkbox.
         defaultsObserver = NotificationCenter.default.addObserver(
@@ -49,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.store.preferencesChanged()
+                self?.updatePopoverSize()
                 self?.renderStatusItem()
             }
         }
@@ -95,11 +99,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.title = ""
     }
 
+    private func updatePopoverSize() {
+        guard let popover else { return }
+        popover.contentSize = PopoverMetrics.contentSize(
+            snapshot: store.snapshot,
+            providers: UsagePreferences.enabledProviderIDs()
+        )
+    }
+
     @objc private func togglePopover(_ sender: AnyObject?) {
         guard let button = statusItem.button else { return }
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            updatePopoverSize()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             store.refresh()
