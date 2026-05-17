@@ -16,16 +16,40 @@ public enum Formatting {
     }
 }
 
-/// Pretty-print Anthropic's plan tier strings ("default_claude_max_20x" etc.)
-/// for the popover badge.
+/// Pretty-print plan tier strings without binding the UI to a single provider.
 public enum PlanLabel {
     public static func display(_ raw: String) -> String {
-        switch true {
-        case raw.contains("max_20x"): return "Max 20x"
-        case raw.contains("max_5x"):  return "Max 5x"
-        case raw.contains("pro"):     return "Pro"
-        case raw == "subscription":   return "Subscription"
-        default:                      return raw
+        let normalized = raw
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+            .lowercased()
+
+        let tokens = normalized
+            .split(separator: "_")
+            .map(String.init)
+            .filter { token in
+                !["default", "claude", "codex", "chatgpt", "openai", "subscription"].contains(token)
+            }
+
+        if let maxIndex = tokens.firstIndex(of: "max"),
+           maxIndex + 1 < tokens.count,
+           tokens[maxIndex + 1].hasSuffix("x") {
+            return "Max \(tokens[maxIndex + 1])"
         }
+
+        let words = tokens.isEmpty ? [raw] : tokens
+        return words
+            .map { token in
+                switch token {
+                case "prolite": return "Pro Lite"
+                case "self": return "Self"
+                case "serve": return "Serve"
+                case "usage": return "Usage"
+                case "based": return "Based"
+                default: return token.capitalized
+                }
+            }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

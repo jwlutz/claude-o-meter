@@ -10,18 +10,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let store = UsageStore()
     private var cancellable: AnyCancellable?
     private var defaultsObserver: NSObjectProtocol?
-
-    /// Toggling the popover's "Timer" checkbox changes the menu-bar button's
-    /// width (countdown text appears/disappears). If we re-render while the
-    /// popover is open, NSStatusItem resizes the button mid-interaction and
-    /// NSPopover's anchor recalc gets confused — empirically the popover
-    /// jumps to the screen edge. Defer all menu-bar updates until the
-    /// popover closes; this flag tracks whether one is queued.
     private var pendingRender = false
 
-    /// Bundle ID of the Claude desktop app — used to gate the menu bar
-    /// icon's visibility on Claude.app's running state.
-    private static let claudeBundleID = "com.anthropic.claudefordesktop"
+    /// Bundle IDs for provider desktop apps. App lifecycle changes are used as
+    /// a refresh hint, but the menu-bar item stays visible so the user can
+    /// inspect each provider's current status.
+    private static let providerBundleIDs: Set<String> = [
+        "com.anthropic.claudefordesktop",
+        "com.openai.codex",
+    ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -34,11 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentSize = NSSize(width: 360, height: 260)
+        popover.contentSize = NSSize(width: 420, height: 520)
         popover.contentViewController = NSHostingController(rootView: PopoverView(store: store))
 
         renderStatusItem()
-        updateClaudeAppVisibility()
+        store.refresh()
 
         cancellable = store.$snapshot
             .receive(on: RunLoop.main)
@@ -50,14 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.renderStatusItem() }
+            MainActor.assumeIsolated {
+                self?.store.preferencesChanged()
+                self?.renderStatusItem()
+            }
         }
 
-        // Track Claude.app lifecycle so the menu bar icon disappears when
-        // Claude.app quits and reappears when it launches. Daemon stays
-        // alive in the background (LaunchAgent KeepAlive) — no probe call
-        // makes sense without Claude's auth, so we also pause the icon
-        // updates from a backed-off snapshot.
+        // Track provider app lifecycle and refresh when auth surfaces come and
+        // go. Codex may still be probeable via its CLI while the app is closed.
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         for name in [
             NSWorkspace.didLaunchApplicationNotification,
@@ -65,62 +62,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ] {
             workspaceCenter.addObserver(
                 self,
-                selector: #selector(claudeAppStateChanged(_:)),
+                selector: #selector(providerAppStateChanged(_:)),
                 name: name,
                 object: nil
             )
         }
     }
 
-    @objc private func claudeAppStateChanged(_ notification: Notification) {
+    @objc private func providerAppStateChanged(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication,
-              app.bundleIdentifier == Self.claudeBundleID
+              let bundleIdentifier = app.bundleIdentifier,
+              Self.providerBundleIDs.contains(bundleIdentifier)
         else { return }
-        updateClaudeAppVisibility()
-    }
-
-    /// Hide/show the status item based on Claude.app's running state.
-    /// `isVisible` is the documented way to remove the icon from the menu
-    /// bar without releasing the NSStatusItem.
-    private func updateClaudeAppVisibility() {
-        let claudeRunning = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == Self.claudeBundleID
-        }
-        statusItem?.isVisible = claudeRunning
-        if claudeRunning {
-            // Auth just came back — refresh immediately instead of waiting
-            // up to 60s for the next probe tick.
-            store.refresh()
-        }
+        store.refresh()
     }
 
     private func renderStatusItem() {
-        // Avoid resizing the anchor button while the popover is shown — the
-        // popover would re-anchor mid-frame and flicker / jump.
-        if popover?.isShown == true {
+        guard let button = statusItem.button else { return }
+        let snapshot = store.snapshot
+        let showTimer = UserDefaults.standard.object(forKey: UsagePreferenceKeys.showTimer) as? Bool ?? true
+        let providers = UsagePreferences.orderedProviderIDs()
+
+        let img = MenuBarPillImage.render(snapshot: snapshot, providers: providers, showTimer: showTimer)
+        img.isTemplate = false
+        if popover?.isShown == true, abs(statusItem.length - img.size.width) > 0.5 {
             pendingRender = true
             return
         }
-        guard let button = statusItem.button else { return }
-        let snapshot = store.snapshot
-        let showTimer = UserDefaults.standard.object(forKey: "showTimer") as? Bool ?? true
-
-        let fraction: Double
-        let label: String?
-        switch snapshot.mode {
-        case .unknown:
-            fraction = 0
-            label = nil
-        case .subscription(let s):
-            fraction = min(1.0, s.fiveHourPct / 100.0)
-            label = showTimer ? s.fiveHourResetText : nil
-        }
-
-        let img = ClaudeBadgeImage.render(fraction: fraction, pointSize: 22)
-        img.isTemplate = false
+        statusItem.length = img.size.width
         button.image = img
-        button.title = label.map { "  \($0)" } ?? ""
+        button.title = ""
     }
 
     @objc private func togglePopover(_ sender: AnyObject?) {
@@ -136,9 +108,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: NSPopoverDelegate
 
-    /// Apply any deferred menu-bar render once the popover is no longer
-    /// anchored to the button. This is what makes the Timer checkbox feel
-    /// "instant" without causing the jump bug.
     func popoverDidClose(_ notification: Notification) {
         if pendingRender {
             pendingRender = false

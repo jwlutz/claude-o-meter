@@ -2,13 +2,17 @@
 
 A native menu-bar / system-tray app for **macOS** and **Windows** showing
 your real-time Claude Pro/Max **5-hour** and **weekly** subscription usage.
+On macOS, it can also show Codex **5-hour** and **weekly** usage, or both
+Claude Code and Codex side by side.
 
 Pulls live numbers straight from the same Anthropic endpoint the Claude
 desktop app's Settings → Usage page uses, so the percentages match
 exactly — no estimation, no token thresholds, no hardcoded plan limits.
 
-The icon is a Claude burst that drains clockwise as you use up the 5-hour
-window: full bright orange when fresh, gray ghost when exhausted.
+On macOS, the menu bar shows Claude Code and Codex side by side as compact
+pills. Each pill keeps its provider logo and reset timer together, and the
+logo drains clockwise as the 5-hour utilization rises: bright when fresh,
+gray ghost when exhausted.
 
 ![Claude-o-Meter menu bar icon and popover](docs/screenshot.png)
 
@@ -61,6 +65,7 @@ To uninstall: Settings → Apps → Claude-o-Meter → Uninstall.
 |---|---|---|
 | OS version | 13+ (Ventura) | 10/11 x64 |
 | Claude desktop app | installed and signed in | installed and signed in |
+| Codex desktop app | optional; installed and signed in for Codex usage | — |
 | Subscription | Pro / Max 5x / Max 20x | Pro / Max 5x / Max 20x |
 
 The Claude desktop app provides the auth — the app reads its keychain
@@ -69,7 +74,8 @@ No Python, no third-party deps; everything statically built.
 
 ## How it works
 
-Both platforms follow the same pattern, with platform-appropriate auth:
+Claude usage follows the same pattern on both platforms, with
+platform-appropriate auth:
 
 1. Authenticate as the Claude desktop app:
    - **macOS**: read the `Claude Safe Storage` AES key from the login
@@ -82,13 +88,17 @@ Both platforms follow the same pattern, with platform-appropriate auth:
 3. `GET https://api.anthropic.com/api/oauth/usage` (Windows) or
    `https://claude.ai/api/organizations/<orgId>/usage` (macOS) with the
    decrypted cookie jar.
-4. Render a tray/menu-bar icon with the burst silhouette plus a
-   clockwise pie wedge that drains as the 5-hour utilization rises.
+4. Render a tray/menu-bar status item with provider logo/timer pills. Each
+   logo gets a clockwise pie wedge that drains as the 5-hour utilization rises.
 5. Re-fetch every 60 seconds (macOS) / 5 minutes (Windows — endpoint
    rate-limits more aggressively on that path).
 
 The API returns `utilization` percentages directly, so there's nothing
 estimated.
+
+On macOS, Codex usage is read from Codex's local app-server protocol via
+`account/rateLimits/read`. That returns the Codex usage windows directly:
+5-hour, weekly, reset timestamps, plan type, and optional credits.
 
 ## Build from source
 
@@ -125,8 +135,9 @@ Windows 11). Output goes to `target/release/bundle/`.
 claude-o-meter/
   Sources/                              # macOS — Swift
     ClaudeoMeterCore/{UsageSnapshot,Formatting}.swift
-    ClaudeoMeterApp/{main,AppDelegate,UsageStore,UsageProbe,
-                     ClaudeBadge,PopoverView}.swift
+    ClaudeoMeterApp/{main,AppDelegate,UsageStore,UsageProvider,
+                     UsageProbe,CodexUsageProvider,ClaudeBadge,
+                     PopoverView}.swift
   windows/                              # Windows — Tauri 2 (Rust)
     src-tauri/src/{main,probe,types,icon_render,
                     cookies,settings,font5x7}.rs
@@ -142,9 +153,10 @@ claude-o-meter/
 
 ## Reset semantics
 
-Both percentages and reset timestamps come from Anthropic — nothing is
-computed locally. The 5-hour window resets 5 hours after the first
-request in it; the weekly window resets at a fixed weekly cadence.
+Percentages and reset timestamps come from the provider usage source —
+nothing is computed from local token totals. The 5-hour window resets 5
+hours after the first request in it; the weekly window resets at a fixed
+weekly cadence.
 
 ## What's counted
 

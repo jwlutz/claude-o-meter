@@ -16,16 +16,12 @@ import ClaudeoMeterCore
 ///    prefix.
 /// 4. Read `organizationUuid` from `~/.claude.json:oauthAccount`.
 /// 5. GET the usage endpoint with the cookie jar + Claude desktop UA.
-final class UsageProbe: @unchecked Sendable {
-    enum Result {
-        case ok(SubscriptionStats)
-        case failed(String)
-    }
-
+final class ClaudeUsageProvider: UsageProvider, @unchecked Sendable {
+    let id: UsageProviderID = .claudeCode
     private let queue = DispatchQueue(label: "ClaudeoMeter.probe", qos: .background)
     private var inFlight = false
 
-    func run(completion: @escaping (Result) -> Void) {
+    func run(completion: @escaping (ProviderProbeResult) -> Void) {
         if inFlight { return }
         inFlight = true
         queue.async { [weak self] in
@@ -34,7 +30,7 @@ final class UsageProbe: @unchecked Sendable {
         }
     }
 
-    private func runOnce() -> Result {
+    private func runOnce() -> ProviderProbeResult {
         let (keyOpt, keyErr) = readKeychainKey()
         guard let keyPw = keyOpt else { return .failed(humanize(keyErr ?? "keychain")) }
 
@@ -180,7 +176,7 @@ final class UsageProbe: @unchecked Sendable {
 
     // MARK: - HTTP
 
-    private func fetchUsage(orgId: String, cookies: [String: String], planTier: String) -> Result {
+    private func fetchUsage(orgId: String, cookies: [String: String], planTier: String) -> ProviderProbeResult {
         guard let url = URL(string: "https://claude.ai/api/organizations/\(orgId)/usage") else {
             return .failed("invalid url")
         }
@@ -227,16 +223,47 @@ final class UsageProbe: @unchecked Sendable {
         }
         let weekPct = (week?["utilization"] as? Double) ?? 0
 
-        return .ok(SubscriptionStats(
+        var windows = [
+            UsageWindow(
+                id: "fiveHour",
+                title: "5-hour window",
+                usedPercent: fivePct,
+                resetAt: resetDate(from: five?["resets_at"] as? String),
+                durationMinutes: 300
+            ),
+            UsageWindow(
+                id: "weekly",
+                title: "Weekly · all models",
+                usedPercent: weekPct,
+                resetAt: resetDate(from: week?["resets_at"] as? String),
+                durationMinutes: 10_080
+            ),
+        ]
+
+        if let sonnetPct = sonnet?["utilization"] as? Double {
+            windows.append(UsageWindow(
+                id: "weeklySonnet",
+                title: "Weekly · Sonnet",
+                usedPercent: sonnetPct,
+                resetAt: resetDate(from: sonnet?["resets_at"] as? String),
+                durationMinutes: 10_080
+            ))
+        }
+        if let opusPct = opus?["utilization"] as? Double {
+            windows.append(UsageWindow(
+                id: "weeklyOpus",
+                title: "Weekly · Opus",
+                usedPercent: opusPct,
+                resetAt: resetDate(from: opus?["resets_at"] as? String),
+                durationMinutes: 10_080
+            ))
+        }
+
+        return .ok(ProviderUsageStats(
+            provider: .claudeCode,
             plan: planTier,
-            fiveHourPct: fivePct,
-            fiveHourResetText: relativeReset(from: five?["resets_at"] as? String),
-            weeklyPct: weekPct,
-            weeklyResetText: relativeReset(from: week?["resets_at"] as? String),
-            weeklySonnetPct: sonnet?["utilization"] as? Double,
-            weeklySonnetResetText: relativeReset(from: sonnet?["resets_at"] as? String),
-            weeklyOpusPct: opus?["utilization"] as? Double,
-            weeklyOpusResetText: relativeReset(from: opus?["resets_at"] as? String),
+            windows: windows,
+            credits: nil,
             queriedAt: Date()
         ))
     }
@@ -260,13 +287,12 @@ final class UsageProbe: @unchecked Sendable {
         }
     }
 
-    private func relativeReset(from iso: String?) -> String? {
+    private func resetDate(from iso: String?) -> Date? {
         guard let iso else { return nil }
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let g = ISO8601DateFormatter()
         g.formatOptions = [.withInternetDateTime]
-        guard let date = f.date(from: iso) ?? g.date(from: iso) else { return nil }
-        return Formatting.compactDuration(max(0, date.timeIntervalSince(Date())))
+        return f.date(from: iso) ?? g.date(from: iso)
     }
 }
