@@ -14,5 +14,9 @@ let package = Package(
             name: "ClaudeoMeterApp",
             dependencies: ["ClaudeoMeterCore"]
         ),
+        .testTarget(
+            name: "ClaudeoMeterCoreTests",
+            dependencies: ["ClaudeoMeterCore"]
+        ),
     ]
 )
