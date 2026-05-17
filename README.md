@@ -23,6 +23,23 @@ Grab the latest binary from
 
 ### macOS (Apple Silicon)
 
+Homebrew:
+
+```bash
+brew tap jwlutz/tap
+brew install claude-o-meter
+brew services start claude-o-meter
+```
+
+To stop or uninstall the Homebrew service:
+
+```bash
+brew services stop claude-o-meter
+brew uninstall claude-o-meter
+```
+
+Manual install:
+
 Download `claude-o-meter-macos-arm64.tar.gz`, then:
 
 ```bash
